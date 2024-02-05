@@ -1,0 +1,4 @@
+projects/configs/*/varibles.py
+*.pyc
+*.log
+running.sh
