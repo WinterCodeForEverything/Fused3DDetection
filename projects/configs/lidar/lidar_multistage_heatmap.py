@@ -1,4 +1,4 @@
-_base_ = './varibles.py'
+_base_ = './varibles_multistage_heatmap.py'
 
 #from mmdet3d.models.losses.chamfer_distance import ChamferDistance
 custom_imports = dict(
@@ -313,7 +313,7 @@ test_pipeline = [
 
 train_dataloader = dict(
     batch_size= _base_.train_batch_size,
-    num_workers=4,
+    num_workers=8,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
     dataset=dict(
@@ -333,7 +333,7 @@ train_dataloader = dict(
             box_type_3d='LiDAR')))
 val_dataloader = dict(
     batch_size=1,
-    num_workers=4,
+    num_workers=8,
     persistent_workers=True,
     drop_last=False,
     sampler=dict(type='DefaultSampler', shuffle=False),
@@ -373,18 +373,18 @@ param_scheduler = [
     # lr * 1e-4
     dict(
         type='CosineAnnealingLR',
-        T_max=5,
+        T_max=2,
         eta_min=lr * 5,
         begin=0,
-        end=5,
+        end=2,
         by_epoch=True,
         convert_to_iter_based=True),
     dict(
         type='CosineAnnealingLR',
-        T_max=12,
+        T_max=4,
         eta_min= 1e-8,
-        begin=8,
-        end=20,
+        begin=2,
+        end=6,
         by_epoch=True,
         convert_to_iter_based=True),
     # momentum scheduler
@@ -392,24 +392,24 @@ param_scheduler = [
     # during the next 12 epochs, momentum increases from 0.85 / 0.95 to 1
     dict(
         type='CosineAnnealingMomentum',
-        T_max=5,
+        T_max=2,
         eta_min=0.85 / 0.95,
         begin=0,
-        end=5,
+        end=2,
         by_epoch=True,
         convert_to_iter_based=True),
     dict(
         type='CosineAnnealingMomentum',
-        T_max=12,
+        T_max=4,
         eta_min=1,
-        begin=8,
-        end=20,
+        begin=2,
+        end=6,
         by_epoch=True,
         convert_to_iter_based=True)
 ]
 
 # runtime settings
-train_cfg = dict(by_epoch=True, max_epochs=20, val_interval=4)
+train_cfg = dict(by_epoch=True, max_epochs=6, val_interval=2)
 val_cfg = dict()
 test_cfg = dict()
 
@@ -428,9 +428,9 @@ log_processor = dict(window_size=50)
 
 default_hooks = dict(
     logger=dict(type='LoggerHook', interval=50),
-    checkpoint=dict(type='CheckpointHook', interval=4)
+    checkpoint=dict(type='CheckpointHook', interval=2)
     )
-custom_hooks = [dict(type='DisableObjectSampleHook', disable_after_epoch=15)]
+custom_hooks = [dict(type='DisableObjectSampleHook', disable_after_epoch=4)]
 vis_backends = [
     dict(type='LocalVisBackend'),
     #dict(type='TensorboardVisBackend'),

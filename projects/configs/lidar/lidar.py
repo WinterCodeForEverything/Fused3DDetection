@@ -380,10 +380,10 @@ param_scheduler = [
         convert_to_iter_based=True),
     dict(
         type='CosineAnnealingLR',
-        T_max=12,
-        eta_min= 1e-8,
+        T_max=16,
+        eta_min= 5e-9,
         begin=8,
-        end=20,
+        end=24,
         by_epoch=True,
         convert_to_iter_based=True),
     # momentum scheduler
@@ -399,16 +399,16 @@ param_scheduler = [
         convert_to_iter_based=True),
     dict(
         type='CosineAnnealingMomentum',
-        T_max=12,
+        T_max=16,
         eta_min=1,
         begin=8,
-        end=20,
+        end=24,
         by_epoch=True,
         convert_to_iter_based=True)
 ]
 
 # runtime settings
-train_cfg = dict(by_epoch=True, max_epochs=20, val_interval=4)
+train_cfg = dict(by_epoch=True, max_epochs=24, val_interval=4)
 val_cfg = dict()
 test_cfg = dict()
 

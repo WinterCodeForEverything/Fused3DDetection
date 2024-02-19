@@ -74,6 +74,7 @@ class MFFusionHead(nn.Module):
         super(MFFusionHead, self).__init__()
 
         self.num_classes = num_classes
+        self.num_proposals_ori = num_proposals
         self.num_proposals = num_proposals
         self.in_channels = in_channels
         self.num_heads = num_heads
@@ -661,8 +662,6 @@ class MFFusionHead(nn.Module):
         seed_feat  = self.seed_embedding( seed_feat )
         
         return seed_feat 
- 
- 
     
     @torch.no_grad()  
     def get_front_bev_points( self, points, front_idx, front_token_number ):
@@ -704,8 +703,125 @@ class MFFusionHead(nn.Module):
 
         return front_bev_dix[:, :-1].contiguous()       
     
+    
+    def generate_gt_groups(self, query_feat, query_pos, query_heatmap_score, lidar_feat, lidar_feat_flatten, bev_pos, heatmap,
+        gt_bboxes_3d, gt_labels_3d):
+
+        batch_size = len(gt_bboxes_3d)
+        point_cloud_range = torch.as_tensor(self.train_cfg['point_cloud_range'], device='cuda')
+
+        # compute noised gt groups mask
+        batch_valid_gt_mask = torch.zeros((batch_size, self.max_num_gts * self.add_gt_groups), dtype=bool, device=query_pos.device)
+        for batch_idx in range(batch_size):
+            for group_i in range(self.add_gt_groups):
+                batch_valid_gt_mask[batch_idx, group_i*self.max_num_gts:group_i*self.max_num_gts+self.num_gts[batch_idx]] = 1
+
+        # compute noised gt groups
+        batch_gt_pos = []
+        batch_gt_query_labels = []
+        batch_gt_bev_corners = []
+        batch_gt_bboxes_3d = []
+        for batch_idx in range(batch_size):
+            gs_box = gt_bboxes_3d[batch_idx].tensor.cuda()
+            gs = F.pad(gs_box[:, :2], pad=(0, 0, 0, self.max_num_gts - self.num_gts[batch_idx]))
+            gs_labels = F.pad(gt_labels_3d[batch_idx], pad=(0, self.max_num_gts - self.num_gts[batch_idx]), value=self.num_classes) # set background class
+            gs_bev_corners = F.pad(gt_bboxes_3d[batch_idx].corners.cuda().reshape(-1, 4, 2, 3)[:, :4, 0, :2], pad=(0, 0, 0, 0, 0, self.max_num_gts - self.num_gts[batch_idx]))
+
+            gs = gs.repeat(self.add_gt_groups, 1)
+            gs_labels = gs_labels.repeat(self.add_gt_groups)
+            gs_bev_corners = gs_bev_corners.repeat(self.add_gt_groups, 1, 1)
+            
+            gs_box = self.bbox_coder.encode(gs_box) # same as CenterPoint (TODO(not checked for z !!!))
+            gs_box = F.pad(gs_box, pad=(0, 0, 0, self.max_num_gts - self.num_gts[batch_idx]))
+            gs_box = gs_box.repeat(self.add_gt_groups, 1)
+
+            meta_noise = (torch.rand((len(gs_bev_corners), 2), device='cuda') * 2 - 1)
+            if self.add_gt_groups_noise.startswith('rect'):
+                gs_bev_corners_rect = torch.cat([gs_bev_corners.min(dim=1)[0], gs_bev_corners.max(dim=1)[0]], dim=1)
+                noise = float(self.add_gt_groups_noise.split(',')[1]) * meta_noise
+                box_center_noise = (gs_bev_corners_rect[:, 2:4] - gs_bev_corners_rect[:, 0:2]) / 2. * noise
+                gs = gs + box_center_noise
+            elif self.add_gt_groups_noise.startswith('cam'):
+                gs_vec = gs / (gs.norm(dim=1)+1e-6)[:,None]
+                gs_vec_orth = torch.stack([gs_vec[:,1], -gs_vec[:,0]], dim=1)
+                gs_mat = torch.stack([gs_vec, gs_vec_orth], dim=-1)
+                gs_bev_corners_trans = gs_bev_corners.matmul(gs_mat)
+
+                gs_bev_corners_rect = torch.cat([gs_bev_corners_trans.min(dim=1)[0], gs_bev_corners_trans.max(dim=1)[0]], dim=1)
+                # gs_bev_corners_rect[:, [1, 3]] = 0. # only cam
+                scale = self.add_gt_groups_noise.split(',')[1]
+                if '-' in scale:
+                    scale = torch.as_tensor(list(map(float, scale.split('-'))), device='cuda')[None]
+                else:
+                    scale = float(scale)
+
+                noise = scale * meta_noise
+                box_center_noise = (gs_bev_corners_rect[:, 2:4] - gs_bev_corners_rect[:, 0:2]) / 2. * noise
+                gs = gs + box_center_noise[:,None].matmul(gs_mat)[:,0]
+            elif self.add_gt_groups_noise.startswith('box'):
+                pseudo_w = gs_bev_corners[:, 2] - gs_bev_corners[:, 0]
+                pseudo_h = gs_bev_corners[:, 1] - gs_bev_corners[:, 0]
+                pseudo_w_len = pseudo_w.norm(dim=-1)
+                pseudo_h_len = pseudo_h.norm(dim=-1)
+                noise = float(self.add_gt_groups_noise.split(',')[1]) * meta_noise
+
+                box_center_noise = (pseudo_w / 2. * noise[:, 0:1]) + (pseudo_h / 2. * noise[:, 1:2])
+                gs = gs + box_center_noise
+            else:
+                raise NotImplementedError
+
+            gs[:, 0] = gs[:, 0].clip(min=point_cloud_range[0]+1e-6, max=point_cloud_range[3]-1e-5)
+            gs[:, 1] = gs[:, 1].clip(min=point_cloud_range[1]+1e-6, max=point_cloud_range[4]-1e-5)
+            gs = (gs - point_cloud_range[None, :2]) / (point_cloud_range[None,3:5]-point_cloud_range[None,:2])
+            assert self.initialize_by_heatmap
+            W, H = lidar_feat.shape[-2:] # (W, H) <---> (y, x)
+            gs = gs * torch.as_tensor([H, W], dtype=gs.dtype, device='cuda')
+            gs[:, 0] = gs[:, 0].clip(max=H-1, min=0)
+            gs[:, 1] = gs[:, 1].clip(max=W-1, min=0)
+            gs = gs.to(torch.int64) # center int
+
+            ### set the labels ####
+            # determine the positive query with distance
+            positive_mask = (box_center_noise.norm(dim=1) < self.add_gt_pos_thresh)
+            gs_labels[torch.logical_not(positive_mask)] = self.num_classes # set background class
+
+            # determine the positive query with distance along box
+            if self.add_gt_groups_noise.startswith('box'):
+                positive_mask = noise.norm(dim=1) < self.add_gt_pos_boxnoise_thresh
+                gs_labels[torch.logical_not(positive_mask)] = self.num_classes # set background class
+
+            batch_gt_pos.append(gs)
+            batch_gt_query_labels.append(gs_labels)
+            batch_gt_bboxes_3d.append(gs_box)
+
+        batch_gt_pos = torch.stack(batch_gt_pos, dim=0)
+        batch_gt_query_labels = torch.stack(batch_gt_query_labels, dim=0)
+        batch_gt_bboxes_3d = torch.stack(batch_gt_bboxes_3d, dim=0)
+
+        batch_gt_bev_pos = bev_pos.gather(index=(batch_gt_pos[:, :, 1] * H + batch_gt_pos[:, :, 0])[...,None].expand(-1,-1, bev_pos.shape[-1]), dim=1)
+        batch_gt_heatmap_score = heatmap.gather(index=(batch_gt_pos[:, :, 1] * H + batch_gt_pos[:, :, 0])[:, None, :].expand(-1, self.num_classes, -1), dim=-1)
+        batch_gt_query_feat = lidar_feat_flatten.gather(index=(batch_gt_pos[:, None, :, 1] * H + batch_gt_pos[:, None, :, 0]).expand(-1, lidar_feat_flatten.shape[1], -1), dim=-1)
+        if len(self.add_gt_groups_noise.split(',')) > 2 and self.add_gt_groups_noise.split(',')[2] == 'heatmap':
+            batch_gt_heatmap_class = batch_gt_heatmap_score.argmax(dim=1)
+            batch_gt_one_hot = F.one_hot(batch_gt_heatmap_class, num_classes=self.num_classes + 1).permute(0, 2, 1)
+            # useles as the prediction only extracts one-hot label
+        elif len(self.add_gt_groups_noise.split(',')) > 2 and self.add_gt_groups_noise.split(',')[2] == 'heatmapcls':
+            batch_gt_one_hot = batch_gt_heatmap_score
+        else:
+            batch_gt_one_hot = F.one_hot(batch_gt_query_labels, num_classes=self.num_classes + 1).permute(0, 2, 1)
+        batch_gt_one_hot = batch_gt_one_hot[:, :self.num_classes]
+        batch_gt_query_cat_encoding = self.class_encoding(batch_gt_one_hot.float())
+        batch_gt_query_feat += batch_gt_query_cat_encoding
+
+        query_pos = torch.cat([query_pos, batch_gt_bev_pos * batch_valid_gt_mask[...,None].float()], dim=1)
+        query_feat = torch.cat([query_feat, batch_gt_query_feat * batch_valid_gt_mask[:, None, :].float()], dim=2)
+        query_heatmap_score = torch.cat([query_heatmap_score, batch_gt_heatmap_score * batch_valid_gt_mask[:, None, :].float()], dim=2)
+
+        return query_feat, query_pos, query_heatmap_score, batch_valid_gt_mask, batch_gt_query_labels
+
     def forward_single(self, points, voxel_feats_dict, img_feats, batch_input_metas):
         
+        self.num_proposals = self.num_proposals_ori
         #print("3:", len(voxel_feats_dict['spatial_feats']) )
         #spatial_feat = voxel_feats_dict['spatial_feats']
         pillar_feat = voxel_feats_dict['pillar_feats']
@@ -791,8 +907,9 @@ class MFFusionHead(nn.Module):
             query_labels = [top_proposals_class]
             query_embeds = [query_embed]
             query_poses = [query_pos]
+            query_pos_embeds = [query_pos_embed]
             query_heatmap_scores = [query_heatmap_score]
-            acc_masks = torch.ones_like(heatmap, dtype=torch.bool)
+            acc_masks = torch.ones_like(dense_heatmap, dtype=torch.bool)
             multistage_masks = [acc_masks]
             heatmap_train = [dense_heatmap]
             for i in range(self.multistage_heatmap):
@@ -829,9 +946,9 @@ class MFFusionHead(nn.Module):
                     # selected_mask[:, 3:] = F.interpolate( selected_mask[:, 3:].float(), size = dense_heatmap.shape[-2:], mode='nearest' )
                 
                 heatmap = heatmap * (heatmap == local_max)
-                heatmap = heatmap.view(batch_size, heatmap.shape[1], -1)
-                acc_masks = acc_masks * (1. - selected_mask)
+                acc_masks = acc_masks * (~selected_mask)
                 heatmap = heatmap * acc_masks
+                heatmap = heatmap.view(batch_size, heatmap.shape[1], -1)
                         
                 top_proposals = heatmap.view(batch_size, -1).argsort(
                     dim=-1, descending=True)[..., :self.num_proposals]
@@ -857,16 +974,19 @@ class MFFusionHead(nn.Module):
 
                 query_embeds.append(query_embed)
                 query_poses.append(query_pos)
+                query_pos_embeds.append(query_pos_embed)
                 query_heatmap_scores.append(query_heatmap_score)
                                 
                 multistage_masks.append(acc_masks.clone())
             
             self.query_label = torch.cat( query_labels, dim = 1 )   
-            query_embed = torch.cat(query_embeds, dim=2)
+            query_embed = torch.cat(query_embeds, dim=1)
+            #print( query_embed.shape )
             query_pos = torch.cat(query_poses, dim=1)
+            query_pos_embed = torch.cat(query_pos_embeds, dim=1)
             query_heatmap_score = torch.cat(query_heatmap_scores, dim=2)
             
-            self.num_proposals = self.num_proposals * ( self.multistage_heatmap + 1 )
+            self.num_proposals = self.num_proposals_ori * ( self.multistage_heatmap + 1 )
             
                 
         ################## Deformable Parameters #############

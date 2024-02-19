@@ -1,4 +1,4 @@
-projects/configs/*/varibles.py
+projects/configs/*/varibles*
 *.pyc
 *.log
 debug.sh
