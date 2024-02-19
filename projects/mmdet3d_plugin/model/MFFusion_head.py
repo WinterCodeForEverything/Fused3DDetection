@@ -42,6 +42,7 @@ class MFFusionHead(nn.Module):
         in_channels=128 * 4,
         hidden_channel=128,
         num_classes=4,
+        multistage_heatmap = 0,
         #query denoising
         noise_scale=1.0,
         noise_trans=0.0,
@@ -83,6 +84,7 @@ class MFFusionHead(nn.Module):
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
         self.pc_range = train_cfg['point_cloud_range']
+        self.multistage_heatmap = multistage_heatmap
 
 
         self.use_sigmoid_cls = loss_cls.get('use_sigmoid', False)
@@ -170,6 +172,12 @@ class MFFusionHead(nn.Module):
             ))
         self.heatmap_head = nn.Sequential(*heatmap_layers)
         self.class_encoding = nn.Conv1d(num_classes, hidden_channel, 1)
+        
+        if self.multistage_heatmap != 0:
+            self.multistage_heatmap_head = nn.ModuleList()
+            for _ in range(self.multistage_heatmap):
+                self.multistage_heatmap_head.append(copy.deepcopy(self.heatmap_head)) # just copy parameter values.
+                
 
         #self.points_encoder = MODELS.build(points_encoder)
         #self.vote_module = VoteModule(**vote_module_cfg)
@@ -730,6 +738,7 @@ class MFFusionHead(nn.Module):
         
         with torch.autocast('cuda', enabled=False):
             dense_heatmap = self.heatmap_head( feat_pc.float() )    #copy.deepcopy(feat_pc.detach())
+
         heatmap = dense_heatmap.detach().sigmoid()  #.view(batch_size, -1)
         #frontmap, _ = heatmap.max(dim=1)
         #print( frontmap.shape )
@@ -740,7 +749,7 @@ class MFFusionHead(nn.Module):
         local_max_inner = F.max_pool2d(
             heatmap, kernel_size=self.nms_kernel_size, stride=1, padding=0)
         local_max[:, :, padding:(-padding),
-                  padding:(-padding)] = local_max_inner
+                padding:(-padding)] = local_max_inner
         # for Pedestrian & Traffic_cone in nuScenes
         if self.train_cfg['dataset'] == 'nuScenes':
             local_max[:, 8, ] = F.max_pool2d(
@@ -775,56 +784,91 @@ class MFFusionHead(nn.Module):
         #print( query_pos_embed.shape )
         front_feature = feat_pc_flatten.gather( dim = -1, index = top_proposals_index.unsqueeze(1).expand(-1, feat_pc_flatten.shape[1], -1) )
         query_embed = ( front_feature + query_cat_encoding ).transpose( 1, 2 ).contiguous()
-
-
-        # if img_feats is not None:
-        #     # with torch.autocast('cuda', enabled=False):
-        #     #     frontscore = self.frontmap_head( feat_pc.float() ).squeeze(1)
-        #     # frontmap = frontscore.detach().sigmoid()
-        #     # front_num = H*W*0.5
-        #     # front_num = int(front_num)
-        #     # frontmap = frontmap.view(batch_size, -1)
-        #     # front_idx = frontmap.argsort(
-        #     #     dim=-1, descending=True)[..., :front_num]
-        #     # front_bev_mask = frontmap.new_zeros( frontmap.shape, dtype=torch.bool )
-        #     # front_bev_mask.scatter_( dim = -1, index = front_idx, value= True )
-        #     # front_points_mask = self.get_front_points_mask( points, front_bev_mask )
-        #     # front_points = [ points[i, front_points_mask[i]]  for i in range(batch_size) ]
-        #     # front_points = self.padding_points_set_to_same_length( front_points, start_points )
-        #     # print( points.shape )
-        #     # print( front_points.shape )
-        #     #with torch.autocast('cuda'):
-        #     img_tokens_reference_points, img_tokens_masks = self.get_img_tokens_reference_points( 
-        #         points, img_feats, batch_input_metas )
-            
-        #     img_tokens_reference_points = (img_tokens_reference_points - img_tokens_reference_points.new_tensor(self.pc_range[:3])) / \
-        #     voxel_size / cfg['out_size_factor']     
-            
-        #     B, V, C, H_, W_ = img_feats.shape
-        #     img_key_embed = img_feats.permute( 0, 1, 3, 4, 2).reshape( B, V*H_*W_, -1 ).contiguous()
-        #     img_tokens_reference_points = img_tokens_reference_points[..., :2].view( B, V*H_*W_, -1)
-        #     img_key_pos_embed = self.bev_embedding( self.pos2embed(img_tokens_reference_points, num_pos_feats=self.pos_embed_channel ) )
-            
-        #     key_embed = torch.cat( (lidar_key_embed, img_key_embed), dim = 1 )
-        #     key_pos_embed = torch.cat( (lidar_key_pos_embed, img_key_pos_embed), dim = 1 )
-            
-        #     pc_tokens_masks = torch.ones( B, H*W, dtype=torch.bool ).to( points.device )
-        #     key_masks = torch.cat( (pc_tokens_masks, img_tokens_masks.view(B, V*H_*W_)), dim = 1 )
-            
-        #     # frontpoints_aggregate_img_feat = self.compute_frontpoints_corresponding_img_feat( points, img_feats, batch_input_metas )
-        #     # #del img_feats
-        #     # img_key_embed = frontpoints_aggregate_img_feat.permute( 0, 2, 1 ).contiguous()
-        #     # img_tokens_reference_points = (points - points.new_tensor(self.pc_range[:3])) / \
-        #     #                                 voxel_size / cfg['out_size_factor'] 
-        #     # img_key_pos_embed = self.bev_embedding( self.pos2embed(img_tokens_reference_points[..., :2], num_pos_feats=self.pos_embed_channel ) )
-        #     # key_embed = torch.cat( (lidar_key_embed, img_key_embed), dim = 1 )
-        #     # key_pos_embed = torch.cat( (lidar_key_pos_embed, img_key_pos_embed), dim = 1 )
-            
-        # else:
-        #     key_embed = lidar_key_embed
-        #     key_pos_embed = lidar_key_pos_embed
-        #     key_masks = None
         
+        query_heatmap_score = heatmap.gather( index=top_proposals_index[:,None, :].expand(-1, self.num_classes,-1), dim=-1 ) 
+    
+        if self.multistage_heatmap != 0:
+            query_labels = [top_proposals_class]
+            query_embeds = [query_embed]
+            query_poses = [query_pos]
+            query_heatmap_scores = [query_heatmap_score]
+            acc_masks = torch.ones_like(heatmap, dtype=torch.bool)
+            multistage_masks = [acc_masks]
+            heatmap_train = [dense_heatmap]
+            for i in range(self.multistage_heatmap):
+                
+                selected_mask = torch.zeros_like(acc_masks, dtype=torch.bool).view(batch_size, -1)
+                selected_mask = torch.scatter( selected_mask, 1, top_proposals, 1 )
+                selected_mask = selected_mask.reshape(*acc_masks.shape)
+
+                dense_heatmap = self.multistage_heatmap_head[i](feat_pc.float())
+                heatmap = dense_heatmap.detach().sigmoid()
+                heatmap_train.append( dense_heatmap )
+
+                padding = self.nms_kernel_size // 2
+                local_max = torch.zeros_like(heatmap)
+                # equals to nms radius = voxel_size * out_size_factor * kenel_size
+                local_max_inner = F.max_pool2d(
+                    heatmap, kernel_size=self.nms_kernel_size, stride=1, padding=0)
+                local_max[:, :, padding:(-padding),
+                        padding:(-padding)] = local_max_inner
+                # for Pedestrian & Traffic_cone in nuScenes
+                if self.train_cfg['dataset'] == 'nuScenes':
+                    local_max[:, 8, ] = F.max_pool2d(
+                        heatmap[:, 8], kernel_size=1, stride=1, padding=0)
+                    local_max[:, 9, ] = F.max_pool2d(
+                        heatmap[:, 9], kernel_size=1, stride=1, padding=0)
+                    # selected_mask[:, :8] = F.interpolate( selected_mask[:, :8].float(), size = dense_heatmap.shape[-2:], mode='nearest' )
+                elif self.train_cfg[
+                        'dataset'] == 'Waymo':  # for Pedestrian & Cyclist in Waymo
+                    local_max[:, 1, ] = F.max_pool2d(
+                        heatmap[:, 1], kernel_size=1, stride=1, padding=0)
+                    local_max[:, 2, ] = F.max_pool2d(
+                        heatmap[:, 2], kernel_size=1, stride=1, padding=0)
+                    # selected_mask[:, 0] = F.interpolate( selected_mask[:, 0].float(), size = dense_heatmap.shape[-2:], mode='nearest' )
+                    # selected_mask[:, 3:] = F.interpolate( selected_mask[:, 3:].float(), size = dense_heatmap.shape[-2:], mode='nearest' )
+                
+                heatmap = heatmap * (heatmap == local_max)
+                heatmap = heatmap.view(batch_size, heatmap.shape[1], -1)
+                acc_masks = acc_masks * (1. - selected_mask)
+                heatmap = heatmap * acc_masks
+                        
+                top_proposals = heatmap.view(batch_size, -1).argsort(
+                    dim=-1, descending=True)[..., :self.num_proposals]
+                top_proposals_class = torch.div(top_proposals, heatmap.shape[-1], rounding_mode='floor')
+                top_proposals_index = top_proposals % heatmap.shape[-1]
+                
+                query_labels.append( top_proposals_class )
+                
+                # add category embedding
+                one_hot = F.one_hot(
+                    top_proposals_class,
+                    num_classes=self.num_classes).permute(0, 2, 1)
+                query_cat_encoding = self.class_encoding(one_hot.float())
+
+                query_pos = bev_pos.gather( dim = 1, index = top_proposals_index.unsqueeze(-1).expand(-1, -1, 2) )
+
+                query_pos_embed = self.bev_embedding( self.pos2embed(query_pos, num_pos_feats=self.pos_embed_channel ) )
+                #print( query_pos_embed.shape )
+                front_feature = feat_pc_flatten.gather( dim = -1, index = top_proposals_index.unsqueeze(1).expand(-1, feat_pc_flatten.shape[1], -1) )
+                query_embed = ( front_feature + query_cat_encoding ).transpose( 1, 2 ).contiguous()
+
+                query_heatmap_score = heatmap.gather(index=top_proposals_index[:, None, :].expand(-1, self.num_classes, -1), dim=-1)
+
+                query_embeds.append(query_embed)
+                query_poses.append(query_pos)
+                query_heatmap_scores.append(query_heatmap_score)
+                                
+                multistage_masks.append(acc_masks.clone())
+            
+            self.query_label = torch.cat( query_labels, dim = 1 )   
+            query_embed = torch.cat(query_embeds, dim=2)
+            query_pos = torch.cat(query_poses, dim=1)
+            query_heatmap_score = torch.cat(query_heatmap_scores, dim=2)
+            
+            self.num_proposals = self.num_proposals * ( self.multistage_heatmap + 1 )
+            
+                
         ################## Deformable Parameters #############
         if not self.multiscale:
             #W, H = lidar_feat.shape[-2:]
@@ -886,13 +930,11 @@ class MFFusionHead(nn.Module):
         ret_dict['center'] = query_pos.permute( 0, 2, 1 )
 
         ret_dict['dense_heatmap'] = dense_heatmap
-        ret_dict['query_heatmap_score'] = heatmap.gather(
-            index=top_proposals_index[:,
-                                      None, :].expand(-1, self.num_classes,
-                                                      -1),
-            dim=-1,
-        ) 
-        
+        if self.multistage_heatmap != 0:
+            ret_dict['multistage_masks'] = multistage_masks
+            ret_dict['dense_heatmap'] = heatmap_train
+            
+        ret_dict['query_heatmap_score'] = query_heatmap_score
         # if img_feats is not None:
         #     ret_dict['frontscore'] = frontscore
         #     ret_dict['front_bev_map'] = front_bev_mask.view( batch_size, H, W )
@@ -1242,11 +1284,22 @@ class MFFusionHead(nn.Module):
 
 
         # compute heatmap loss
-        loss_heatmap = self.loss_heatmap(
-            clip_sigmoid(preds_dict['dense_heatmap']).float(),
-            heatmap.float(),
-            avg_factor=max(heatmap.eq(1).float().sum().item(), 1),
-        )
+        if self.multistage_heatmap != 0:
+            multistage_masks = torch.cat(preds_dict['multistage_masks'], dim=0)
+            heatmap = heatmap.repeat(len(preds_dict['dense_heatmap']), 1, 1, 1) * multistage_masks # mask the ignore gt
+            preds_dict['dense_heatmap'] = torch.cat(preds_dict['dense_heatmap'], dim=0)
+            loss_heatmap = self.loss_heatmap(
+                clip_sigmoid(preds_dict['dense_heatmap']), 
+                heatmap.float(), 
+                weight=multistage_masks, 
+                avg_factor=max(heatmap.eq(1).float().sum().item(), 1)
+            )
+        else:
+            loss_heatmap = self.loss_heatmap(
+                clip_sigmoid(preds_dict['dense_heatmap']).float(),
+                heatmap.float(),
+                avg_factor=max(heatmap.eq(1).float().sum().item(), 1),
+            )
         loss_dict['loss_heatmap'] = loss_heatmap
         
         # loss_dict['loss_frontmap'] = self.loss_frontmap(

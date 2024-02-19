@@ -1,4 +1,8 @@
 projects/configs/*/varibles.py
 *.pyc
 *.log
+debug.sh
 running.sh
+submit_task.sh
+simple_test.py
+rose.*
