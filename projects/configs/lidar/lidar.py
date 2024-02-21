@@ -133,12 +133,19 @@ model = dict(
             voxel_size=voxel_size[:2],
             code_size=10),
         loss_cls=dict(
-            type='SoftFocalLoss',
+            type='mmdet.FocalLoss',
             use_sigmoid=True,
             gamma=2.0,
             alpha=0.25,
             reduction='mean',
             loss_weight=1.0),
+        # loss_cls=dict(
+        #     type='SoftFocalLoss',
+        #     use_sigmoid=True,
+        #     gamma=2.0,
+        #     alpha=0.25,
+        #     reduction='mean',
+        #     loss_weight=1.0),
         loss_frontmap=dict(
             type='mmdet.CrossEntropyLoss',
             use_sigmoid=True,
@@ -380,10 +387,10 @@ param_scheduler = [
         convert_to_iter_based=True),
     dict(
         type='CosineAnnealingLR',
-        T_max=16,
+        T_max=12,
         eta_min= 5e-9,
         begin=8,
-        end=24,
+        end=20,
         by_epoch=True,
         convert_to_iter_based=True),
     # momentum scheduler
@@ -399,16 +406,16 @@ param_scheduler = [
         convert_to_iter_based=True),
     dict(
         type='CosineAnnealingMomentum',
-        T_max=16,
+        T_max=12,
         eta_min=1,
         begin=8,
-        end=24,
+        end=20,
         by_epoch=True,
         convert_to_iter_based=True)
 ]
 
 # runtime settings
-train_cfg = dict(by_epoch=True, max_epochs=24, val_interval=4)
+train_cfg = dict(by_epoch=True, max_epochs=20, val_interval=4)
 val_cfg = dict()
 test_cfg = dict()
 

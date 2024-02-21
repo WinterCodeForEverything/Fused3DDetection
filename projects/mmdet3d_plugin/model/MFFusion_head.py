@@ -1064,9 +1064,9 @@ class MFFusionHead(nn.Module):
         num_pos = np.sum(res_tuple[5])
         matched_ious = np.mean(res_tuple[6])
         heatmap = torch.cat(res_tuple[7], dim=0) 
-        iou_bbox_target = torch.cat(res_tuple[8], dim=0)
-        iou_bbox_weights = torch.cat(res_tuple[9], dim=0)  
-        iou3d_dec = torch.cat(res_tuple[10], dim=0)
+        # iou_bbox_target = torch.cat(res_tuple[8], dim=0)
+        # iou_bbox_weights = torch.cat(res_tuple[9], dim=0)  
+        # iou3d_dec = torch.cat(res_tuple[10], dim=0)
         # frontmap = torch.cat(res_tuple[8], dim=0)
         # front_recall = np.mean(res_tuple[9])     
         return (
@@ -1078,9 +1078,9 @@ class MFFusionHead(nn.Module):
             num_pos,
             matched_ious,
             heatmap,
-            iou_bbox_target,
-            iou_bbox_weights,
-            iou3d_dec,
+            # iou_bbox_target,
+            # iou_bbox_weights,
+            # iou3d_dec,
             # frontmap,
             # front_recall,
         )
@@ -1247,16 +1247,16 @@ class MFFusionHead(nn.Module):
         
         mean_iou = ious[pos_inds].sum() / max(len(pos_inds), 1)
         
-        iou_bbox_target = torch.zeros([num_proposals, gt_bboxes_tensor.shape[-1]
-                            ]).to(center.device)
-        iou_bbox_weights = torch.zeros([num_proposals, gt_bboxes_tensor.shape[-1]
-                                    ]).to(center.device)
-        iou_bbox_target[pos_inds, :] = sampling_result.pos_gt_bboxes
-        iou_bbox_weights[pos_inds, :] = 1.0
-        iou2d = bbox_overlaps_nearest_3d( bboxes_tensor, iou_bbox_target, is_aligned=True, coordinate='depth' )
-        z1, z2, z3, z4 = self._bbox_to_loss(bboxes_tensor)[:, 2], self._bbox_to_loss(bboxes_tensor)[:, 5], self._bbox_to_loss(iou_bbox_target)[:, 2], self._bbox_to_loss(iou_bbox_target)[:, 5]
-        iou_z = torch.max(torch.min(z2, z4) - torch.max(z1, z3), z1.new_zeros(z1.shape)) / (torch.max(z2, z4) - torch.min(z1, z3) )
-        iou3d_dec = (iou2d + iou_z)/2
+        # iou_bbox_target = torch.zeros([num_proposals, gt_bboxes_tensor.shape[-1]
+        #                     ]).to(center.device)
+        # iou_bbox_weights = torch.zeros([num_proposals, gt_bboxes_tensor.shape[-1]
+        #                             ]).to(center.device)
+        # iou_bbox_target[pos_inds, :] = sampling_result.pos_gt_bboxes
+        # iou_bbox_weights[pos_inds, :] = 1.0
+        # iou2d = bbox_overlaps_nearest_3d( bboxes_tensor, iou_bbox_target, is_aligned=True, coordinate='depth' )
+        # z1, z2, z3, z4 = self._bbox_to_loss(bboxes_tensor)[:, 2], self._bbox_to_loss(bboxes_tensor)[:, 5], self._bbox_to_loss(iou_bbox_target)[:, 2], self._bbox_to_loss(iou_bbox_target)[:, 5]
+        # iou_z = torch.max(torch.min(z2, z4) - torch.max(z1, z3), z1.new_zeros(z1.shape)) / (torch.max(z2, z4) - torch.min(z1, z3) )
+        # iou3d_dec = (iou2d + iou_z)/2
         
         return (
             labels[None],
@@ -1267,9 +1267,9 @@ class MFFusionHead(nn.Module):
             int(pos_inds.shape[0]),
             float(mean_iou),
             heatmap[None],
-            iou_bbox_target[None],
-            iou_bbox_weights[None],
-            iou3d_dec[None],
+            # iou_bbox_target[None],
+            # iou_bbox_weights[None],
+            # iou3d_dec[None],
             # frontmap[None],
             # float(front_recall),
         )
@@ -1318,9 +1318,9 @@ class MFFusionHead(nn.Module):
             num_pos,
             matched_ious,
             heatmap,
-            iou_bbox_target,
-            iou_bbox_weights,
-            iou3d_dec,
+            # iou_bbox_target,
+            # iou_bbox_weights,
+            # iou3d_dec,
             # frontmap,
             # front_recall,
 
@@ -1365,10 +1365,16 @@ class MFFusionHead(nn.Module):
             -1, self.num_classes)
         loss_cls = self.loss_cls(
             cls_score.float(),
-            [labels.reshape(-1), iou3d_dec.reshape(-1)],
+            labels.reshape(-1),
             label_weights.reshape(-1),
             avg_factor=max(num_pos, 1),
         )
+        # loss_cls = self.loss_cls(
+        #     cls_score.float(),
+        #     [labels.reshape(-1), iou3d_dec.reshape(-1)],
+        #     label_weights.reshape(-1),
+        #     avg_factor=max(num_pos, 1),
+        # )
 
         center = preds_dict['center']
         height = preds_dict['height']
@@ -1383,9 +1389,9 @@ class MFFusionHead(nn.Module):
             preds = torch.cat([
                 center, height, dim, rot, vel
             ], dim=1).permute(0, 2, 1)  # [BS, num_proposals, code_size]
-            pred_iou_box = self.bbox_coder.decode_only_box( rot, dim, center, height, vel)
-        else:
-            pred_iou_box = self.bbox_coder.decode_only_box( rot, dim, center, height)
+            #pred_iou_box = self.bbox_coder.decode_only_box( rot, dim, center, height, vel)
+        #else:
+            #pred_iou_box = self.bbox_coder.decode_only_box( rot, dim, center, height)
             
         # compute bbox and class loss
         code_weights = self.train_cfg.get('code_weights', None)
@@ -1401,24 +1407,25 @@ class MFFusionHead(nn.Module):
         loss_bbox = torch.nan_to_num( loss_bbox )
         loss_dict['cls_loss'] = loss_cls
         loss_dict['loss_bbox'] = loss_bbox
-        
-        #iou_loss
-        pred_iou_box = pred_iou_box.reshape(-1, pred_iou_box.shape[-1])
-        iou_bbox_target = iou_bbox_target.reshape(-1, iou_bbox_target.shape[-1])
-        iou_bbox_weights = iou_bbox_weights.reshape(-1, iou_bbox_weights.shape[-1])
-        #print( pred_iou_box.shape, iou_bbox_target.shape, reg_weights.shape)
-        loss_iou = self.loss_iou( pred_iou_box,
-                                    iou_bbox_target,
-                                    iou_bbox_weights,
-                                    avg_factor=max(num_pos, 1)
-                                     )
-        z1, z2, z3, z4 = self._bbox_to_loss(pred_iou_box)[:, 2], self._bbox_to_loss(pred_iou_box)[:, 5], self._bbox_to_loss(iou_bbox_target)[:, 2], self._bbox_to_loss(iou_bbox_target)[:, 5]
-        iou_z = torch.max(torch.min(z2, z4) - torch.max(z1, z3), z1.new_zeros(z1.shape)) / (torch.max(z2, z4) - torch.min(z1, z3) )
-        loss_iou_z = 1 - iou_z
-        loss_iou += torch.sum(loss_iou_z * iou_bbox_weights[:, 0]) / max(num_pos, 1)
-        loss_dict['loss_iou'] = loss_iou
         loss_dict['matched_ious'] = loss_cls.new_tensor(matched_ious)
-        loss_dict['decouple_ious'] = torch.mean( iou3d_dec )
+        
+        # #iou_loss
+        # pred_iou_box = pred_iou_box.reshape(-1, pred_iou_box.shape[-1])
+        # iou_bbox_target = iou_bbox_target.reshape(-1, iou_bbox_target.shape[-1])
+        # iou_bbox_weights = iou_bbox_weights.reshape(-1, iou_bbox_weights.shape[-1])
+        # #print( pred_iou_box.shape, iou_bbox_target.shape, reg_weights.shape)
+        # loss_iou = self.loss_iou( pred_iou_box,
+        #                             iou_bbox_target,
+        #                             iou_bbox_weights,
+        #                             avg_factor=max(num_pos, 1)
+        #                              )
+        # z1, z2, z3, z4 = self._bbox_to_loss(pred_iou_box)[:, 2], self._bbox_to_loss(pred_iou_box)[:, 5], self._bbox_to_loss(iou_bbox_target)[:, 2], self._bbox_to_loss(iou_bbox_target)[:, 5]
+        # iou_z = torch.max(torch.min(z2, z4) - torch.max(z1, z3), z1.new_zeros(z1.shape)) / (torch.max(z2, z4) - torch.min(z1, z3) )
+        # loss_iou_z = 1 - iou_z
+        # loss_iou += torch.sum(loss_iou_z * iou_bbox_weights[:, 0]) / max(num_pos, 1)
+        # loss_dict['loss_iou'] = loss_iou
+        #loss_dict['matched_ious'] = loss_cls.new_tensor(matched_ious)
+        #loss_dict['decouple_ious'] = torch.mean( iou3d_dec )
         
         return loss_dict
     
