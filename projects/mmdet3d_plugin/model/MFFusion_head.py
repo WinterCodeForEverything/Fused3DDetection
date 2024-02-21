@@ -549,9 +549,13 @@ class MFFusionHead(nn.Module):
         batch_gt_bboxes = [data_sample.gt_instances_3d.bboxes_3d.tensor.to(feat_pc_flatten.device)
                             for data_sample in batch_data_samples]
         batch_gt_labels = [data_sample.gt_instances_3d.labels_3d for data_sample in batch_data_samples]
-
-        denoised_points = [None]*len(batch_data_samples)
+        gt_nums = [gt_bboxes.size(0) for gt_bboxes in batch_gt_bboxes]
         
+        
+        mask_size = max( gt_nums )
+        #gt_mask = torch.zeros( len(batch_data_samples), mask_size, mask_size, dtype=torch.bool ).to(feat_pc_flatten.device)
+        denoised_points = torch.zeros( len(batch_data_samples), mask_size, 2 ).to(feat_pc_flatten.device)
+        denoised_labels = torch.full( (len(batch_data_samples), mask_size), self.num_classes, dtype=torch.long ).to(feat_pc_flatten.device)
         for i, gt_bboxes in enumerate(batch_gt_bboxes):
             gt_centers, gt_box_scales = gt_bboxes[:, :3],  gt_bboxes[:, 3:6]
             gt_centers[:, 2] += gt_box_scales[:, 2] / 2
@@ -560,14 +564,23 @@ class MFFusionHead(nn.Module):
                 rand_prob = torch.rand_like(gt_centers) * 2 - 1.0
                 gt_centers += torch.mul(rand_prob,
                                             noises) * self.bbox_noise_scale
-            denoised_points[i] = gt_centers[:, :2]
             #torch.cat( ( query_reference_points[i], gt_centers ), dim = 0 ) 
+            gt_num = gt_bboxes.size(0)
+            #gt_mask[i, :gt_num, :gt_num] = True 
             
-        denoised_points = self.padding_points_set_to_same_length( denoised_points )
+            denoised_points[i, :gt_num, :] = gt_centers[:, :2]
+            denoised_labels[i, :gt_num] = batch_gt_labels[i].to(feat_pc_flatten.device)
+            
+        # add category embedding
+        one_hot = F.one_hot(
+            denoised_labels,
+            num_classes=self.num_classes + 1)[..., :-1].contiguous().permute(0, 2, 1)
+        query_cat_encoding = self.class_encoding(one_hot.float())
         
         bev_size = torch.div( denoised_points.new_tensor(self.train_cfg['grid_size'][:2]), self.train_cfg['out_size_factor'], rounding_mode='floor').long()
+        voxel_size = denoised_points.new_tensor(self.train_cfg['voxel_size'][:2])
         denoised_bev_idx = torch.div( denoised_points - denoised_points.new_tensor(self.pc_range[:2]), 
-            self.train_cfg['voxel_size'][:2] * self.train_cfg['out_size_factor'],
+            voxel_size * self.train_cfg['out_size_factor'],
             rounding_mode='floor').long()
         denoised_bev_idx[..., 0] = torch.clamp( denoised_bev_idx[..., 0], min = 0, max = bev_size[0] - 1 )
         denoised_bev_idx[..., 1] = torch.clamp( denoised_bev_idx[..., 1], min = 0, max = bev_size[1] - 1 )
@@ -575,10 +588,11 @@ class MFFusionHead(nn.Module):
         
         denoised_query_feat = feat_pc_flatten.gather( dim = -1, index = denoised_idx.unsqueeze(1).expand(-1, feat_pc_flatten.shape[1], -1) )
         
+        denoised_query_embed = ( denoised_query_feat + query_cat_encoding ).transpose( 1, 2 ).contiguous()
         denoised_query_pos = bev_pos.gather( dim = -2, index = denoised_idx.unsqueeze(-1).expand(-1, -1, 2) )
-        denoised_query_pos_embed = self.pos2embed( denoised_query_pos, num_pos_feats=self.pos_embed_channel )
+        denoised_query_pos_embed = self.bev_embedding( self.pos2embed( denoised_query_pos, num_pos_feats=self.pos_embed_channel ) ) 
         
-        return denoised_points
+        return denoised_query_embed, denoised_query_pos, denoised_query_pos_embed, mask_size
     
     def gt_cenetrs_chosen(self, batch_data_samples, device):
 
@@ -718,7 +732,7 @@ class MFFusionHead(nn.Module):
 
         return front_bev_dix[:, :-1].contiguous()       
     
-    def forward_single(self, points, voxel_feats_dict, img_feats, batch_input_metas):
+    def forward_single(self, points, voxel_feats_dict, img_feats, batch_data_samples):
         
         self.num_proposals = self.num_proposals_ori
         #print("3:", len(voxel_feats_dict['spatial_feats']) )
@@ -890,7 +904,18 @@ class MFFusionHead(nn.Module):
               
         
         # query denoising
-        
+        if self.training:
+            denoised_query_embed, denoised_query_pos, denoised_query_pos_embed, mask_size = self.query_denoising( feat_pc_flatten, bev_pos, batch_data_samples )
+            query_embed = torch.cat( (query_embed, denoised_query_embed), dim = 1 )
+            query_pos = torch.cat( (query_pos, denoised_query_pos), dim = 1 )
+            query_pos_embed = torch.cat( (query_pos_embed, denoised_query_pos_embed), dim = 1 )
+            
+            attn_mask = torch.zeros( self.num_proposals + mask_size, self.num_proposals + mask_size, dtype=torch.bool ).to(feat_pc_flatten.device)
+            #attn_mask[:, self.num_proposals:, :self.num_proposals] = True
+            attn_mask[:self.num_proposals, self.num_proposals:] = True
+            attn_mask[self.num_proposals:, :self.num_proposals] = True
+            
+            self.num_proposals += mask_size
                 
         ################## Deformable Parameters #############
         if not self.multiscale:
@@ -921,6 +946,7 @@ class MFFusionHead(nn.Module):
             query_pos= query_pos_embed,
             value= multiscale_inputs_flatten.transpose( 1, 2 ).contiguous(),
             reference_points = reference_points,
+            self_attn_mask = attn_mask,
             **kwargs       
         )
         query_embed = torch.nan_to_num( query_embed )
@@ -941,6 +967,7 @@ class MFFusionHead(nn.Module):
             reference_points = reference_points,
             cls_key= cls_key_embed,
             cls_key_pos= cls_key_pos_embed,
+            self_attn_mask = attn_mask,
             **kwargs  
             )
         box_embed = torch.nan_to_num( box_embed )
@@ -965,7 +992,7 @@ class MFFusionHead(nn.Module):
         return [ret_dict]
         
     
-    def forward(self, points, voxel_feats_dict, img_feats, batch_input_metas):
+    def forward(self, points, voxel_feats_dict, img_feats, batch_data_samples):
         """Forward pass.
 
         Args:
@@ -983,7 +1010,7 @@ class MFFusionHead(nn.Module):
         #     voxel_feats = [voxel_feats]
         if isinstance(img_feats, torch.Tensor):
             img_feats = [img_feats]
-        res = multi_apply(self.forward_single, [points], [voxel_feats_dict], img_feats, [batch_input_metas])
+        res = multi_apply(self.forward_single, [points], [voxel_feats_dict], img_feats, [batch_data_samples])
         assert len(res) == 1, 'only support one level features.'
         return res
     
@@ -1274,7 +1301,7 @@ class MFFusionHead(nn.Module):
         for data_sample in batch_data_samples:
             batch_input_metas.append(data_sample.metainfo)
             batch_gt_instances_3d.append(data_sample.gt_instances_3d)
-        preds_dicts = self(points, voxel_feats_dict, img_feats, batch_input_metas )
+        preds_dicts = self(points, voxel_feats_dict, img_feats, batch_data_samples )
         loss = self.loss_by_feat(preds_dicts, batch_gt_instances_3d)
 
         return loss
@@ -1421,7 +1448,7 @@ class MFFusionHead(nn.Module):
         #                                 labels_3d = labels_3d )
             
         #     batch_gt_instances_3d.append(gt_instances_3d)
-        preds_dicts = self(points, voxel_feats_dict, img_feats, batch_input_metas )
+        preds_dicts = self(points, voxel_feats_dict, img_feats, batch_data_samples )
         res = self.predict_by_feat(preds_dicts, batch_input_metas, batch_gt_instances_3d )
         return res
     
