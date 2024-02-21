@@ -111,6 +111,28 @@ class MFDetector(MVXTwoStageDetector):
         else:
             return None
     
+    def extract_img_feat2(
+        self,
+        x,
+        img_metas,
+    ) -> torch.Tensor:
+        if self.with_img_backbone and x is not None:
+            B, N, C, H, W = x.size()
+            x = x.view(B * N, C, H, W).contiguous()
+
+            x = self.img_backbone(x)
+            x = self.img_neck(x)
+
+            if not isinstance(x, torch.Tensor):
+                x = x[0]
+
+            BN, C, H, W = x.size()
+            x = x.view(B, int(BN / B), C, H, W)
+
+            return x
+        else:
+            return None
+
     # @torch.no_grad()
     # def voxelize(self, points):
     #     feats, coords, sizes = [], [], []
@@ -231,7 +253,7 @@ class MFDetector(MVXTwoStageDetector):
         """
         imgs = batch_inputs_dict.get('imgs', None)
         points = batch_inputs_dict.get('points', None)
-        img_feats = self.extract_img_feat(imgs, batch_input_metas)
+        img_feats = self.extract_img_feat2(imgs, batch_input_metas)
         voxel_feats_dict = self.extract_voxel_feat(points)
 
         normal_points = self.normalize_points( points )

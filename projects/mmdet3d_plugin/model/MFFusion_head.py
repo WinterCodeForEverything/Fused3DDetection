@@ -27,6 +27,7 @@ from mmdet3d.structures.ops.iou3d_calculator import bbox_overlaps_3d, bbox_overl
 # from mmdet3d.models.losses.chamfer_distance import chamfer_distance
 from .utils import draw_bool_heatmap        #, weighted_furthest_point_sample
 
+from torch_scatter import scatter_mean
 #from mmcv.cnn.bricks.transformer import  MultiheadAttention
 
 
@@ -38,6 +39,7 @@ def clip_sigmoid(x, eps=1e-4):
 class MFFusionHead(nn.Module):
 
     def __init__(self,
+        use_camera = False,
         num_proposals=200,
         in_channels=128 * 4,
         hidden_channel=128,
@@ -98,6 +100,7 @@ class MFFusionHead(nn.Module):
         self.loss_heatmap = MODELS.build(loss_heatmap)
         self.loss_frontmap = MODELS.build(loss_frontmap)
         self.sampling = False
+        self.use_camera = use_camera
 
         self.bbox_coder = build_bbox_coder(bbox_coder)
 
@@ -105,14 +108,24 @@ class MFFusionHead(nn.Module):
         # self.front_tokens_threshold = front_tokens_threshold
     
         # a shared convolution
-        self.shared_conv = build_conv_layer(
-            dict(type='Conv2d'),
-            in_channels,
-            hidden_channel,
-            kernel_size=3,
-            padding=1,
-            bias=bias,
-        )
+        if self.use_camera:
+            self.shared_conv = build_conv_layer(
+                dict(type='Conv2d'),
+                in_channels*2,
+                hidden_channel,
+                kernel_size=3,
+                padding=1,
+                bias=bias,
+            )
+        else:
+            self.shared_conv = build_conv_layer(
+                dict(type='Conv1d'),
+                in_channels,
+                hidden_channel,
+                kernel_size=3,
+                padding=1,
+                bias=bias,
+            )
         
         self.multiscale = True
         if self.multiscale:
@@ -492,9 +505,32 @@ class MFFusionHead(nn.Module):
         
         reference_points2 = reference_points2[:, :-1, :].contiguous().view( B, V,  H, W, -1 )
         reference_points_mask2 = reference_points_mask2[:, :-1].contiguous().view( B, V,  H, W )
+        reference_points_mask2 = ~reference_points_mask2
         
         return reference_points2, reference_points_mask2
 
+
+    def compute_bev_img_feat( self, img_feats, correspond_points ):
+        
+        B, V, C, H, W = img_feats.shape
+        
+        cfg = self.train_cfg if self.train_cfg else self.test_cfg
+        bev_size = torch.div(img_feats.new_tensor(cfg['grid_size'][:2]), cfg['out_size_factor'], rounding_mode='floor').long()
+        voxel_size = correspond_points.new_tensor(cfg['voxel_size'])
+        bev_idx = torch.div((correspond_points[..., :2]- correspond_points.new_tensor(self.pc_range[:2])), 
+            voxel_size[:2] * cfg['out_size_factor'],
+              rounding_mode='floor').long()
+        assert  ( bev_idx >= 0).all() & (bev_idx <= bev_size).all() 
+        bev_idx[..., 0] = torch.clamp( bev_idx[..., 0], min = 0, max = bev_size[0] - 1 )
+        bev_idx[..., 1] = torch.clamp( bev_idx[..., 1], min = 0, max = bev_size[1] - 1 )
+        bev_idx_flatten = bev_idx[..., 1] * bev_size[0] + bev_idx[..., 0]   
+        
+        img_feats_flatten = img_feats.view( B, V, C, H*W )
+        bev_img_feats_flatten = img_feats.new_zeros( B, C, bev_size[0]*bev_size[1] )
+        scatter_mean( img_feats_flatten, bev_idx_flatten.unsqueeze(-2).expand(-1, C, -1), -1, out = bev_img_feats_flatten )
+        bev_img_feats = bev_img_feats_flatten.view( B, C, bev_size[0], bev_size[1] )
+        
+        return bev_img_feats
 
     def compute_frontpoints_corresponding_img_feat( self, front_points, img_feats, img_metas ):
         _, N, _ = front_points.shape
@@ -734,39 +770,61 @@ class MFFusionHead(nn.Module):
     
     def forward_single(self, points, voxel_feats_dict, img_feats, batch_data_samples):
         
+        #print( img_feats.shape )
         self.num_proposals = self.num_proposals_ori
         #print("3:", len(voxel_feats_dict['spatial_feats']) )
         #spatial_feat = voxel_feats_dict['spatial_feats']
         pillar_feat = voxel_feats_dict['pillar_feats']
         
         batch_size, _, H, W = pillar_feat.shape
-        feat_pc = self.shared_conv(pillar_feat)
         
-        multiscale_inputs = [feat_pc]
+        cfg = self.train_cfg if self.train_cfg else self.test_cfg
+        start_points = pillar_feat.new_tensor(cfg['point_cloud_range'][:3])
+        points = self.padding_points_set_to_same_length( points, start_points )
+        
+        if img_feats is not None:
+            # with torch.autocast('cuda', enabled=False):
+            #     frontscore = self.frontmap_head( feat_pc.float() ).squeeze(1)
+            # frontmap = frontscore.detach().sigmoid()
+            # front_num = H*W*0.3
+            # front_num = int(front_num)
+            # frontmap = frontmap.view(batch_size, -1)
+            # front_idx = frontmap.argsort(
+            #     dim=-1, descending=True)[..., :front_num]
+            # front_bev_mask = frontmap.new_zeros( frontmap.shape, dtype=torch.bool )
+            # front_bev_mask.scatter_( dim = -1, index = front_idx, value= True )
+            # front_points_mask = self.get_front_points_mask( points, front_bev_mask )
+            # front_points = [ points[i, front_points_mask[i]]  for i in range(batch_size) ]
+            # front_points = self.padding_points_set_to_same_length( front_points, start_points )
+            # print( points.shape )
+            # print( front_points.shape )
+            #with torch.autocast('cuda'):
+            batch_input_metas = [data_sample.metainfo for data_sample in batch_data_samples]
+            img_tokens_reference_points, _ = self.get_img_tokens_reference_points( 
+                points, img_feats, batch_input_metas )
+            
+            bev_img_feats = self.compute_bev_img_feat( img_feats, img_tokens_reference_points )
+            feat_bev = torch.cat( ( pillar_feat, bev_img_feats ), dim=1 )
+            feat_bev = self.shared_conv(feat_bev)
+        else:
+            feat_bev = self.shared_conv(pillar_feat)
+            
+        multiscale_inputs = [feat_bev]
         if self.multiscale:
             multiscale_inputs.append( self.dconv(multiscale_inputs[-1]) )
             multiscale_inputs.append( self.dconv2(multiscale_inputs[-1]) )
         multiscale_inputs_flatten = torch.cat([i.flatten(2,3) for i in multiscale_inputs], dim=-1)
-
-        #voxel_feats_dict['spatial_feats'] = feat_pc
-        
-        cfg = self.train_cfg if self.train_cfg else self.test_cfg
-        voxel_size = feat_pc.new_tensor(cfg['voxel_size'])   
-        # bev_size = torch.div(feat_pc.new_tensor(cfg['grid_size'][:2]), cfg['out_size_factor'], rounding_mode='floor')
-
-        start_points = feat_pc.new_tensor(cfg['point_cloud_range'][:3])
-        points = self.padding_points_set_to_same_length( points, start_points )
         
         #################################
         # image to BEV
         #################################
-        feat_pc_flatten = feat_pc.view(batch_size,
-                                    feat_pc.shape[1],
+        feat_bev_flatten = feat_bev.view(batch_size,
+                                    feat_bev.shape[1],
                                     -1)  # [BS, C, H*W]
-        bev_pos = self.bev_pos.repeat(batch_size, 1, 1).to(feat_pc_flatten.device)
+        bev_pos = self.bev_pos.repeat(batch_size, 1, 1).to(feat_bev_flatten.device)
         
         with torch.autocast('cuda', enabled=False):
-            dense_heatmap = self.heatmap_head( feat_pc.float() )    #copy.deepcopy(feat_pc.detach())
+            dense_heatmap = self.heatmap_head( feat_bev.float() )    #copy.deepcopy(feat_pc.detach())
 
         heatmap = dense_heatmap.detach().sigmoid()  #.view(batch_size, -1)
         #frontmap, _ = heatmap.max(dim=1)
@@ -811,7 +869,7 @@ class MFFusionHead(nn.Module):
 
         query_pos_embed = self.bev_embedding( self.pos2embed(query_pos, num_pos_feats=self.pos_embed_channel ) )
         #print( query_pos_embed.shape )
-        front_feature = feat_pc_flatten.gather( dim = -1, index = top_proposals_index.unsqueeze(1).expand(-1, feat_pc_flatten.shape[1], -1) )
+        front_feature = feat_bev_flatten.gather( dim = -1, index = top_proposals_index.unsqueeze(1).expand(-1, feat_bev_flatten.shape[1], -1) )
         query_embed = ( front_feature + query_cat_encoding ).transpose( 1, 2 ).contiguous()
         
         query_heatmap_score = heatmap.gather( index=top_proposals_index[:,None, :].expand(-1, self.num_classes,-1), dim=-1 ) 
@@ -831,7 +889,7 @@ class MFFusionHead(nn.Module):
                 selected_mask = torch.scatter( selected_mask, 1, top_proposals, 1 )
                 selected_mask = selected_mask.reshape(*acc_masks.shape)
 
-                dense_heatmap = self.multistage_heatmap_head[i](feat_pc.float())
+                dense_heatmap = self.multistage_heatmap_head[i](feat_bev.float())
                 heatmap = dense_heatmap.detach().sigmoid()
                 heatmap_train.append( dense_heatmap )
 
@@ -880,7 +938,7 @@ class MFFusionHead(nn.Module):
 
                 query_pos_embed = self.bev_embedding( self.pos2embed(query_pos, num_pos_feats=self.pos_embed_channel ) )
                 #print( query_pos_embed.shape )
-                front_feature = feat_pc_flatten.gather( dim = -1, index = top_proposals_index.unsqueeze(1).expand(-1, feat_pc_flatten.shape[1], -1) )
+                front_feature = feat_bev_flatten.gather( dim = -1, index = top_proposals_index.unsqueeze(1).expand(-1, feat_pc_flatten.shape[1], -1) )
                 query_embed = ( front_feature + query_cat_encoding ).transpose( 1, 2 ).contiguous()
 
                 query_heatmap_score = heatmap.gather(index=top_proposals_index[:, None, :].expand(-1, self.num_classes, -1), dim=-1)
@@ -905,12 +963,12 @@ class MFFusionHead(nn.Module):
         
         # query denoising
         if self.training:
-            denoised_query_embed, denoised_query_pos, denoised_query_pos_embed, mask_size = self.query_denoising( feat_pc_flatten, bev_pos, batch_data_samples )
+            denoised_query_embed, denoised_query_pos, denoised_query_pos_embed, mask_size = self.query_denoising( feat_bev_flatten, bev_pos, batch_data_samples )
             query_embed = torch.cat( (query_embed, denoised_query_embed), dim = 1 )
             query_pos = torch.cat( (query_pos, denoised_query_pos), dim = 1 )
             query_pos_embed = torch.cat( (query_pos_embed, denoised_query_pos_embed), dim = 1 )
             
-            attn_mask = torch.zeros( self.num_proposals + mask_size, self.num_proposals + mask_size, dtype=torch.bool ).to(feat_pc_flatten.device)
+            attn_mask = torch.zeros( self.num_proposals + mask_size, self.num_proposals + mask_size, dtype=torch.bool ).to(feat_bev_flatten.device)
             #attn_mask[:, self.num_proposals:, :self.num_proposals] = True
             attn_mask[:self.num_proposals, self.num_proposals:] = True
             attn_mask[self.num_proposals:, :self.num_proposals] = True
@@ -957,7 +1015,7 @@ class MFFusionHead(nn.Module):
         query_pos_embed = self.bev_embedding( self.pos2embed( query_pos, num_pos_feats=self.pos_embed_channel ))
         
         
-        cls_key_embed = feat_pc_flatten.transpose( 1, 2 )
+        cls_key_embed = feat_bev_flatten.transpose( 1, 2 )
         cls_key_pos_embed = self.bev_embedding(self.pos2embed( bev_pos, num_pos_feats = self.pos_embed_channel ))
         
         box_embed, cls_embed = self.decoder( 

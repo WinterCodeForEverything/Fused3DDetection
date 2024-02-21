@@ -84,6 +84,7 @@ model = dict(
         use_conv_for_no_stride=True),
     pts_bbox_head=dict(
         type='MFFusionHead',
+        use_camera=False,
         num_proposals=200,
         in_channels=512,
         hidden_channel=inter_channel,
@@ -437,18 +438,18 @@ default_hooks = dict(
     checkpoint=dict(type='CheckpointHook', interval=4)
     )
 custom_hooks = [dict(type='DisableObjectSampleHook', disable_after_epoch=15)]
-vis_backends = [
-    dict(type='LocalVisBackend'),
-    #dict(type='TensorboardVisBackend'),
-    dict(type='WandbVisBackend',
-         init_kwargs={
-            'project': _base_.wandb_project,
-            'name': _base_.wandb_group,
-         },
-         #log_checkpoint=True,
-         )
-]
-visualizer = dict(
-    type='Det3DLocalVisualizer', vis_backends=vis_backends, name='visualizer')
+# vis_backends = [
+#     dict(type='LocalVisBackend'),
+#     #dict(type='TensorboardVisBackend'),
+#     dict(type='WandbVisBackend',
+#          init_kwargs={
+#             'project': _base_.wandb_project,
+#             'name': _base_.wandb_group,
+#          },
+#          #log_checkpoint=True,
+#          )
+# ]
+# visualizer = dict(
+#     type='Det3DLocalVisualizer', vis_backends=vis_backends, name='visualizer')
 
 #load_from ='/mnt/data/users/chao.liu/checkpoints/deformable_decouple_lidar/epoch_4.pth'

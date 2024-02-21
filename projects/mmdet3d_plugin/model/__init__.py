@@ -14,6 +14,7 @@ from .point_sa_module2 import MFPointSAModule
 from .nuscenes_metrics import MFNuScenesMetric
 from .prediction_head import MFSeparateHead
 from .rdiouloss import RDIoULoss, SoftFocalLoss
+from .bevfusion_necks import GeneralizedLSSFPN
 
 
 __all__ = [
@@ -24,7 +25,7 @@ __all__ = [
     'MFFusionGlobalRotScaleTrans', 'BEVLoadMultiViewImageFromFiles',
     'BEVFusionSparseEncoder', 'MFPointSAModule',
     'MFNuScenesMetric', 'MFDeformableDetrTransformerDecoderLayer',
-    'MFSeparateHead', 'RDIoULoss', 'SoftFocalLoss',
+    'MFSeparateHead', 'RDIoULoss', 'SoftFocalLoss', 'GeneralizedLSSFPN',
 ]
 
 
