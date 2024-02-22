@@ -91,9 +91,11 @@ model = dict(
         num_classes= len(class_names),
         nms_kernel_size=3,
         bn_momentum=0.1,
+        multistage_heatmap = 0,
         #query denoising
-        noise_scale=0.5,
+        noise_scale=1.0,
         noise_trans=0.0,
+        add_gt_groups = 3,
         #center_attn_cfg=dict(embed_dims=256, num_heads=8, dropout=0.1, batch_first=True),
         center_decoder_cfg = dict(
             type='mmdet.models.DeformableDetrTransformerDecoderLayer',
@@ -438,18 +440,18 @@ default_hooks = dict(
     checkpoint=dict(type='CheckpointHook', interval=4)
     )
 custom_hooks = [dict(type='DisableObjectSampleHook', disable_after_epoch=15)]
-# vis_backends = [
-#     dict(type='LocalVisBackend'),
-#     #dict(type='TensorboardVisBackend'),
-#     dict(type='WandbVisBackend',
-#          init_kwargs={
-#             'project': _base_.wandb_project,
-#             'name': _base_.wandb_group,
-#          },
-#          #log_checkpoint=True,
-#          )
-# ]
-# visualizer = dict(
-#     type='Det3DLocalVisualizer', vis_backends=vis_backends, name='visualizer')
+vis_backends = [
+    dict(type='LocalVisBackend'),
+    #dict(type='TensorboardVisBackend'),
+    dict(type='WandbVisBackend',
+         init_kwargs={
+            'project': _base_.wandb_project,
+            'name': _base_.wandb_group,
+         },
+         #log_checkpoint=True,
+         )
+]
+visualizer = dict(
+    type='Det3DLocalVisualizer', vis_backends=vis_backends, name='visualizer')
 
 #load_from ='/mnt/data/users/chao.liu/checkpoints/deformable_decouple_lidar/epoch_4.pth'
