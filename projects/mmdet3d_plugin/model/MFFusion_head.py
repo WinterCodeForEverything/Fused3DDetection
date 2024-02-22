@@ -974,6 +974,8 @@ class MFFusionHead(nn.Module):
             attn_mask[self.num_proposals:, :self.num_proposals] = True
             
             self.num_proposals += mask_size
+        else:
+            attn_mask = None
                 
         ################## Deformable Parameters #############
         if not self.multiscale:
