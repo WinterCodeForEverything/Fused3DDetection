@@ -90,17 +90,44 @@ model = dict(
         num_classes= len(class_names),
         nms_kernel_size=3,
         bn_momentum=0.1,
-        multistage_heatmap = 2,
+        multistage_heatmap = 1,
         #query denoising
         noise_scale=0.5,
         noise_trans=0.0,
         #center_attn_cfg=dict(embed_dims=256, num_heads=8, dropout=0.1, batch_first=True),
-        center_decoder_cfg = dict(
-            type='mmdet.models.DeformableDetrTransformerDecoderLayer',
-            self_attn_cfg=dict(embed_dims=inter_channel, num_heads=8, dropout=0.1),
-            cross_attn_cfg=dict(embed_dims=inter_channel, num_levels=3, num_heads=8, dropout=0.1),
+        # center_decoder_cfg = dict(
+        #     type='mmdet.models.DeformableDetrTransformerDecoderLayer',
+        #     self_attn_cfg=dict(embed_dims=inter_channel, num_heads=8, dropout=0.1),
+        #     cross_attn_cfg=dict(embed_dims=inter_channel, num_levels=3, num_heads=8, dropout=0.1),
+        #     ffn_cfg=dict(
+        #         embed_dims=inter_channel,
+        #         feedforward_channels=1024,
+        #         num_fcs=2,
+        #         ffn_drop=0.1,
+        #         act_cfg=dict(type='ReLU', inplace=True),
+        #     ),
+        #     norm_cfg=dict(type='LN'),
+        # ),
+        # decoder_cfg=dict(
+        #     type='MFDeformableDetrTransformerDecoderLayer',
+        #     self_attn_cfg=dict(embed_dims=inter_channel, num_heads=8, dropout=0.1),
+        #     cls_cross_attn_cfg=dict(embed_dims=inter_channel, num_heads=8, dropout=0.1),
+        #     box_cross_attn_cfg=dict(embed_dims=inter_channel, num_levels=3, num_heads=8, dropout=0.1),
+        #     ffn_cfg=dict(
+        #         embed_dims=inter_channel,
+        #         feedforward_channels=1024,
+        #         num_fcs=2,
+        #         ffn_drop=0.1,
+        #         act_cfg=dict(type='ReLU', inplace=True),
+        #     ),
+        #     norm_cfg=dict(type='LN'),
+        # ),
+       center_decoder_cfg=dict(
+            type='CenterTransformerDecoderLayer',
+            self_attn_cfg=dict(embed_dims=256, num_heads=8, dropout=0.1),
+            cross_attn_cfg=dict(embed_dims=256, num_heads=8, dropout=0.1),
             ffn_cfg=dict(
-                embed_dims=inter_channel,
+                embed_dims=256,
                 feedforward_channels=1024,
                 num_fcs=2,
                 ffn_drop=0.1,
@@ -109,18 +136,18 @@ model = dict(
             norm_cfg=dict(type='LN'),
         ),
         decoder_cfg=dict(
-            type='MFDeformableDetrTransformerDecoderLayer',
-            self_attn_cfg=dict(embed_dims=inter_channel, num_heads=8, dropout=0.1),
-            cls_cross_attn_cfg=dict(embed_dims=inter_channel, num_heads=8, dropout=0.1),
-            box_cross_attn_cfg=dict(embed_dims=inter_channel, num_levels=3, num_heads=8, dropout=0.1),
+            type='MFTransformerDecoderLayer',
+            self_attn_cfg=dict(embed_dims=256, num_heads=8, dropout=0.1),
+            cross_attn_cfg=dict(embed_dims=256, num_heads=8, dropout=0.1),
             ffn_cfg=dict(
-                embed_dims=inter_channel,
+                embed_dims=256,
                 feedforward_channels=1024,
                 num_fcs=2,
                 ffn_drop=0.1,
                 act_cfg=dict(type='ReLU', inplace=True),
             ),
             norm_cfg=dict(type='LN'),
+            #pos_encoding_cfg=dict(input_channel=256, num_pos_feats=128)
         ),
         center_head = dict( center=[2, 2] ),
         common_heads=dict(
@@ -134,12 +161,19 @@ model = dict(
             voxel_size=voxel_size[:2],
             code_size=10),
         loss_cls=dict(
-            type='SoftFocalLoss',
+            type='mmdet.FocalLoss',
             use_sigmoid=True,
             gamma=2.0,
             alpha=0.25,
             reduction='mean',
             loss_weight=1.0),
+        # loss_cls=dict(
+        #     type='SoftFocalLoss',
+        #     use_sigmoid=True,
+        #     gamma=2.0,
+        #     alpha=0.25,
+        #     reduction='mean',
+        #     loss_weight=1.0),
         loss_frontmap=dict(
             type='mmdet.CrossEntropyLoss',
             use_sigmoid=True,
@@ -371,39 +405,39 @@ param_scheduler = [
     # During the first 8 epochs, learning rate increases from 0 to lr * 10
     # during the next 12 epochs, learning rate decreases from lr * 10 to
     # lr * 1e-4
-    dict(
-        type='CosineAnnealingLR',
-        T_max=2,
-        eta_min=lr * 5,
-        begin=0,
-        end=2,
-        by_epoch=True,
-        convert_to_iter_based=True),
+    # dict(
+    #     type='CosineAnnealingLR',
+    #     T_max=2,
+    #     eta_min=lr,
+    #     begin=0,
+    #     end=2,
+    #     by_epoch=True,
+    #     convert_to_iter_based=True),
     dict(
         type='CosineAnnealingLR',
         T_max=4,
         eta_min= 1e-8,
-        begin=2,
-        end=6,
+        begin=0,
+        end=4,
         by_epoch=True,
         convert_to_iter_based=True),
     # momentum scheduler
     # During the first 8 epochs, momentum increases from 0 to 0.85 / 0.95
     # during the next 12 epochs, momentum increases from 0.85 / 0.95 to 1
-    dict(
-        type='CosineAnnealingMomentum',
-        T_max=2,
-        eta_min=0.85 / 0.95,
-        begin=0,
-        end=2,
-        by_epoch=True,
-        convert_to_iter_based=True),
+    # dict(
+    #     type='CosineAnnealingMomentum',
+    #     T_max=2,
+    #     eta_min=0.85 / 0.95,
+    #     begin=0,
+    #     end=2,
+    #     by_epoch=True,
+    #     convert_to_iter_based=True),
     dict(
         type='CosineAnnealingMomentum',
         T_max=4,
         eta_min=1,
-        begin=2,
-        end=6,
+        begin=0,
+        end=4,
         by_epoch=True,
         convert_to_iter_based=True)
 ]
@@ -430,7 +464,7 @@ default_hooks = dict(
     logger=dict(type='LoggerHook', interval=50),
     checkpoint=dict(type='CheckpointHook', interval=2)
     )
-custom_hooks = [dict(type='DisableObjectSampleHook', disable_after_epoch=4)]
+#custom_hooks = [dict(type='DisableObjectSampleHook', disable_after_epoch=6)]
 vis_backends = [
     dict(type='LocalVisBackend'),
     #dict(type='TensorboardVisBackend'),

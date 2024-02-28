@@ -62,9 +62,8 @@ model = dict(
     #     num_outs=2),
     pts_bbox_head=dict(
         type='MFFusionHead',
-        use_camera=True,
         num_proposals=200,
-        in_channels=512,
+        in_channels=768,
         hidden_channel=inter_channel,
         num_classes= len(class_names),
         nms_kernel_size=3,
@@ -73,12 +72,39 @@ model = dict(
         noise_scale=0.5,
         noise_trans=0.0,
         #center_attn_cfg=dict(embed_dims=256, num_heads=8, dropout=0.1, batch_first=True),
-        center_decoder_cfg = dict(
-            type='mmdet.models.DeformableDetrTransformerDecoderLayer',
-            self_attn_cfg=dict(embed_dims=inter_channel, num_heads=8, dropout=0.1),
-            cross_attn_cfg=dict(embed_dims=inter_channel, num_levels=3, num_heads=8, dropout=0.1),
+        # center_decoder_cfg = dict(
+        #     type='mmdet.models.DeformableDetrTransformerDecoderLayer',
+        #     self_attn_cfg=dict(embed_dims=inter_channel, num_heads=8, dropout=0.1),
+        #     cross_attn_cfg=dict(embed_dims=inter_channel, num_levels=3, num_heads=8, dropout=0.1),
+        #     ffn_cfg=dict(
+        #         embed_dims=inter_channel,
+        #         feedforward_channels=1024,
+        #         num_fcs=2,
+        #         ffn_drop=0.1,
+        #         act_cfg=dict(type='ReLU', inplace=True),
+        #     ),
+        #     norm_cfg=dict(type='LN'),
+        # ),
+        # decoder_cfg=dict(
+        #     type='MFDeformableDetrTransformerDecoderLayer',
+        #     self_attn_cfg=dict(embed_dims=inter_channel, num_heads=8, dropout=0.1),
+        #     cls_cross_attn_cfg=dict(embed_dims=inter_channel, num_heads=8, dropout=0.1),
+        #     box_cross_attn_cfg=dict(embed_dims=inter_channel, num_levels=3, num_heads=8, dropout=0.1),
+        #     ffn_cfg=dict(
+        #         embed_dims=inter_channel,
+        #         feedforward_channels=1024,
+        #         num_fcs=2,
+        #         ffn_drop=0.1,
+        #         act_cfg=dict(type='ReLU', inplace=True),
+        #     ),
+        #     norm_cfg=dict(type='LN'),
+        # ),
+        center_decoder_cfg=dict(
+            type='CenterTransformerDecoderLayer',
+            self_attn_cfg=dict(embed_dims=256, num_heads=8, dropout=0.1),
+            cross_attn_cfg=dict(embed_dims=256, num_heads=8, dropout=0.1),
             ffn_cfg=dict(
-                embed_dims=inter_channel,
+                embed_dims=256,
                 feedforward_channels=1024,
                 num_fcs=2,
                 ffn_drop=0.1,
@@ -87,18 +113,18 @@ model = dict(
             norm_cfg=dict(type='LN'),
         ),
         decoder_cfg=dict(
-            type='MFDeformableDetrTransformerDecoderLayer',
-            self_attn_cfg=dict(embed_dims=inter_channel, num_heads=8, dropout=0.1),
-            cls_cross_attn_cfg=dict(embed_dims=inter_channel, num_heads=8, dropout=0.1),
-            box_cross_attn_cfg=dict(embed_dims=inter_channel, num_levels=3, num_heads=8, dropout=0.1),
+            type='MFTransformerDecoderLayer',
+            self_attn_cfg=dict(embed_dims=256, num_heads=8, dropout=0.1),
+            cross_attn_cfg=dict(embed_dims=256, num_heads=8, dropout=0.1),
             ffn_cfg=dict(
-                embed_dims=inter_channel,
+                embed_dims=256,
                 feedforward_channels=1024,
                 num_fcs=2,
                 ffn_drop=0.1,
                 act_cfg=dict(type='ReLU', inplace=True),
             ),
             norm_cfg=dict(type='LN'),
+            #pos_encoding_cfg=dict(input_channel=256, num_pos_feats=128)
         ),
         center_head = dict( center=[2, 2] ),
         common_heads=dict(
@@ -251,45 +277,79 @@ val_dataloader = dict(
         ))
 test_dataloader = val_dataloader
 
-# learning rate
-lr = 0.0001
+# # learning rate
+# lr = 0.0001
+# param_scheduler = [
+#     # learning rate scheduler
+#     # During the first 8 epochs, learning rate increases from 0 to lr * 10
+#     # during the next 12 epochs, learning rate decreases from lr * 10 to
+#     # lr * 1e-4
+#     # dict(
+#     #     type='CosineAnnealingLR',
+#     #     T_max=8,
+#     #     eta_min=lr * 8,
+#     #     begin=0,
+#     #     end=8,
+#     #     by_epoch=True,
+#     #     convert_to_iter_based=True),
+#     dict(
+#         type='CosineAnnealingLR',
+#         T_max=6,
+#         eta_min=1e-8,
+#         begin=0,
+#         end=6,
+#         by_epoch=True,
+#         convert_to_iter_based=True),
+#     # momentum scheduler
+#     # During the first 8 epochs, momentum increases from 0 to 0.85 / 0.95
+#     # during the next 12 epochs, momentum increases from 0.85 / 0.95 to 1
+#     # dict(
+#     #     type='CosineAnnealingMomentum',
+#     #     T_max=0,
+#     #     eta_min=0.85 / 0.95,
+#     #     begin=0,
+#     #     end=8,
+#     #     by_epoch=True,
+#     #     convert_to_iter_based=True),
+#     dict(
+#         type='CosineAnnealingMomentum',
+#         T_max=0,
+#         eta_min=1,
+#         begin=0,
+#         end=6,
+#         by_epoch=True,
+#         convert_to_iter_based=True)
+# ]
+
 param_scheduler = [
-    # learning rate scheduler
-    # During the first 8 epochs, learning rate increases from 0 to lr * 10
-    # during the next 12 epochs, learning rate decreases from lr * 10 to
-    # lr * 1e-4
-    # dict(
-    #     type='CosineAnnealingLR',
-    #     T_max=8,
-    #     eta_min=lr * 8,
-    #     begin=0,
-    #     end=8,
-    #     by_epoch=True,
-    #     convert_to_iter_based=True),
+    dict(
+        type='LinearLR',
+        start_factor=0.33333333,
+        by_epoch=False,
+        begin=0,
+        end=500),
     dict(
         type='CosineAnnealingLR',
-        T_max=6,
-        eta_min=1e-8,
         begin=0,
+        T_max=6,
         end=6,
         by_epoch=True,
+        eta_min_ratio=1e-4,
         convert_to_iter_based=True),
     # momentum scheduler
-    # During the first 8 epochs, momentum increases from 0 to 0.85 / 0.95
+    # During the first 8 epochs, momentum increases from 1 to 0.85 / 0.95
     # during the next 12 epochs, momentum increases from 0.85 / 0.95 to 1
-    # dict(
-    #     type='CosineAnnealingMomentum',
-    #     T_max=0,
-    #     eta_min=0.85 / 0.95,
-    #     begin=0,
-    #     end=8,
-    #     by_epoch=True,
-    #     convert_to_iter_based=True),
     dict(
         type='CosineAnnealingMomentum',
-        T_max=0,
-        eta_min=1,
+        eta_min=0.85 / 0.95,
         begin=0,
+        end=2.4,
+        by_epoch=True,
+        convert_to_iter_based=True),
+    dict(
+        type='CosineAnnealingMomentum',
+        eta_min=1,
+        begin=2.4,
         end=6,
         by_epoch=True,
         convert_to_iter_based=True)
@@ -302,12 +362,12 @@ test_cfg = dict()
 
 optim_wrapper = dict(
     type='OptimWrapper',
-    optimizer=dict(type='AdamW', lr=lr, weight_decay=0.01),
-    paramwise_cfg=dict(
-        custom_keys={
-            'img_backbone':  dict(lr_mult=0.1),        #dict(lr_mult=0.01, decay_mult=5),
-            'img_neck': dict(lr_mult=0.1),
-        }),
+    optimizer=dict(type='AdamW', lr=0.0002, weight_decay=0.01),
+    # paramwise_cfg=dict(
+    #     custom_keys={
+    #         'img_backbone':  dict(lr_mult=0.1),        #dict(lr_mult=0.01, decay_mult=5),
+    #         'img_neck': dict(lr_mult=0.1),
+    #     }),
     clip_grad=dict(max_norm=35, norm_type=2))
 
 # Default setting for scaling LR automatically
@@ -319,20 +379,22 @@ auto_scale_lr = dict(enable=False, base_batch_size= 4*_base_.train_batch_size )
 default_hooks = dict(
    logger=dict(type='LoggerHook', interval=50),
    checkpoint=dict(type='CheckpointHook', interval=1))
-custom_hooks = [dict(type='DisableObjectSampleHook', disable_after_epoch=4)]
+#custom_hooks = [dict(type='DisableObjectSampleHook', disable_after_epoch=4)]
 
-# vis_backends = [
-#     dict(type='LocalVisBackend'),
-#     #dict(type='TensorboardVisBackend'),
-#     dict(type='WandbVisBackend',
-#          init_kwargs={
-#             'project': _base_.wandb_project,
-#             'name': _base_.wandb_group,
-#          },
-#          #log_checkpoint=True,
-#          )
-# ]
-# visualizer = dict(
-#     type='Det3DLocalVisualizer', vis_backends=vis_backends, name='visualizer')
+vis_backends = [
+    dict(type='LocalVisBackend'),
+    #dict(type='TensorboardVisBackend'),
+    dict(type='WandbVisBackend',
+         init_kwargs={
+            'project': _base_.wandb_project,
+            'name': _base_.wandb_group,
+         },
+         #log_checkpoint=True,
+         )
+]
+visualizer = dict(
+    type='Det3DLocalVisualizer', vis_backends=vis_backends, name='visualizer')
 
-# load_from ='/mnt/data/users/chao.liu/checkpoints/basic_checkpoint/basic_lidar.pth'
+del _base_.custom_hooks
+
+load_from = _base_.load_from

@@ -1,7 +1,7 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import warnings
 from typing import Optional, Tuple, Union
-#from mmdet.models import  DetrTransformerDecoderLayer
+from mmdet.models import  DetrTransformerDecoderLayer
 import torch
 from torch import Tensor, nn
 
@@ -406,4 +406,213 @@ class MFDeformableDetrTransformerDecoderLayer(BaseModule):
         cls_query = self.cls_ffn(cls_query)
         cls_query = self.norms[4](cls_query)
         
+        return box_query, cls_query
+
+
+@MODELS.register_module()
+class CenterTransformerDecoderLayer(DetrTransformerDecoderLayer):
+
+    def __init__(self,
+                 #pos_encoding_cfg=dict(input_channel=2, num_pos_feats=128),
+                 **kwargs):
+        super().__init__(**kwargs)
+        
+        #self.self_posembed = PositionEncodingLearned(**pos_encoding_cfg)
+        #self.cross_posembed = PositionEncodingLearned(**pos_encoding_cfg)
+        
+    def _init_layers(self) -> None:
+        """Initialize self-attention, FFN, and normalization."""
+        self.self_attn = MultiheadAttention(**self.self_attn_cfg)
+        self.cross_attn = PETRMultiheadFlashAttention(**self.cross_attn_cfg)
+        self.embed_dims = self.self_attn.embed_dims
+        self.ffn = FFN(**self.ffn_cfg)
+        norms_list = [
+            build_norm_layer(self.norm_cfg, self.embed_dims)[1]
+            for _ in range(3)
+        ]
+        self.norms = ModuleList(norms_list)
+
+    def forward(self,
+                query: Tensor,
+                key: Tensor = None,
+                value: Tensor = None,
+                query_pos: Tensor = None,
+                key_pos: Tensor = None,
+                self_attn_mask: Tensor = None,
+                cross_attn_mask: Tensor = None,
+                key_padding_mask: Tensor = None,
+                **kwargs) -> Tensor:
+        """
+        Args:
+            query (Tensor): The input query, has shape (bs, num_queries, dim).
+            key (Tensor, optional): The input key, has shape (bs, num_keys,
+                dim). If `None`, the `query` will be used. Defaults to `None`.
+            value (Tensor, optional): The input value, has the same shape as
+                `key`, as in `nn.MultiheadAttention.forward`. If `None`, the
+                `key` will be used. Defaults to `None`.
+            query_pos (Tensor, optional): The positional encoding for `query`,
+                has the same shape as `query`. If not `None`, it will be added
+                to `query` before forward function. Defaults to `None`.
+            key_pos (Tensor, optional): The positional encoding for `key`, has
+                the same shape as `key`. If not `None`, it will be added to
+                `key` before forward function. If None, and `query_pos` has the
+                same shape as `key`, then `query_pos` will be used for
+                `key_pos`. Defaults to None.
+            self_attn_mask (Tensor, optional): ByteTensor mask, has shape
+                (num_queries, num_keys), as in `nn.MultiheadAttention.forward`.
+                Defaults to None.
+            cross_attn_mask (Tensor, optional): ByteTensor mask, has shape
+                (num_queries, num_keys), as in `nn.MultiheadAttention.forward`.
+                Defaults to None.
+            key_padding_mask (Tensor, optional): The `key_padding_mask` of
+                `self_attn` input. ByteTensor, has shape (bs, num_value).
+                Defaults to None.
+
+        Returns:
+            Tensor: forwarded results, has shape (bs, num_queries, dim).
+        """
+        query = self.self_attn(
+            query=query,
+            key=query,
+            value=query,    # + query_pos
+            query_pos=query_pos,
+            key_pos=query_pos,
+            attn_mask=self_attn_mask,
+            **kwargs)
+        query = self.norms[0](query)
+        # Note that the `value` (equal to `key`) is encoded with `key_pos`.
+        # This is different from the standard DETR Decoder Layer.
+        with torch.autocast('cuda'):
+            query = self.cross_attn(
+                query=query,
+                key=key,
+                value=key, #+ key_pos
+                query_pos=query_pos,
+                key_pos=key_pos,
+                attn_mask=cross_attn_mask,
+                key_padding_mask=key_padding_mask,
+                **kwargs)
+        query = self.norms[1](query)
+        query = self.ffn(query)
+        query = self.norms[2](query)
+
+        #query = query.transpose(1, 2)
+        return query
+
+
+
+
+@MODELS.register_module()
+class MFTransformerDecoderLayer(DetrTransformerDecoderLayer):
+
+    def __init__(self,
+                 #pos_encoding_cfg=dict(input_channel=2, num_pos_feats=128),
+                 **kwargs):
+        super().__init__(**kwargs)
+        
+        #self.self_posembed = PositionEncodingLearned(**pos_encoding_cfg)
+        #self.cross_posembed = PositionEncodingLearned(**pos_encoding_cfg)
+        
+    def _init_layers(self) -> None:
+        """Initialize self-attention, FFN, and normalization."""
+        self.self_attn = MultiheadAttention(**self.self_attn_cfg)
+        self.cls_cross_attn = PETRMultiheadFlashAttention(**self.cross_attn_cfg)
+        self.box_cross_attn = PETRMultiheadFlashAttention(**self.cross_attn_cfg)
+        self.embed_dims = self.self_attn.embed_dims
+        self.cls_ffn = FFN(**self.ffn_cfg)
+        self.box_ffn = FFN(**self.ffn_cfg)
+        norms_list = [
+            build_norm_layer(self.norm_cfg, self.embed_dims)[1]
+            for _ in range(5)
+        ]
+        self.norms = ModuleList(norms_list)
+
+    def forward(self,
+                query: Tensor,
+                query_pos: Tensor = None,
+                box_key: Tensor = None,
+                cls_key: Tensor = None,
+               
+                box_key_pos: Tensor = None,
+                cls_key_pos: Tensor = None,
+                self_attn_mask: Tensor = None,
+                box_cross_attn_mask: Tensor = None,
+                cls_cross_attn_mask: Tensor = None,
+                box_key_padding_mask: Tensor = None,
+                cls_key_padding_mask: Tensor = None,
+                #lidar_tokens_num: int = None,
+                **kwargs) -> Tensor:
+        """
+        Args:
+            query (Tensor): The input query, has shape (bs, num_queries, dim).
+            key (Tensor, optional): The input key, has shape (bs, num_keys,
+                dim). If `None`, the `query` will be used. Defaults to `None`.
+            value (Tensor, optional): The input value, has the same shape as
+                `key`, as in `nn.MultiheadAttention.forward`. If `None`, the
+                `key` will be used. Defaults to `None`.
+            query_pos (Tensor, optional): The positional encoding for `query`,
+                has the same shape as `query`. If not `None`, it will be added
+                to `query` before forward function. Defaults to `None`.
+            key_pos (Tensor, optional): The positional encoding for `key`, has
+                the same shape as `key`. If not `None`, it will be added to
+                `key` before forward function. If None, and `query_pos` has the
+                same shape as `key`, then `query_pos` will be used for
+                `key_pos`. Defaults to None.
+            self_attn_mask (Tensor, optional): ByteTensor mask, has shape
+                (num_queries, num_keys), as in `nn.MultiheadAttention.forward`.
+                Defaults to None.
+            cross_attn_mask (Tensor, optional): ByteTensor mask, has shape
+                (num_queries, num_keys), as in `nn.MultiheadAttention.forward`.
+                Defaults to None.
+            key_padding_mask (Tensor, optional): The `key_padding_mask` of
+                `self_attn` input. ByteTensor, has shape (bs, num_value).
+                Defaults to None.
+
+        Returns:
+            Tensor: forwarded results, has shape (bs, num_queries, dim).
+        """
+    
+        query = self.self_attn(
+            query=query,
+            key=query,
+            value=query,    # + query_pos
+            query_pos=query_pos,
+            key_pos=query_pos,
+            attn_mask=self_attn_mask,
+            **kwargs)
+        query = self.norms[0](query)
+        # Note that the `value` (equal to `key`) is encoded with `key_pos`.
+        # This is different from the standard DETR Decoder Layer.
+        # lidar_keys, image_keys = key[:, :lidar_tokens_num], key[:, lidar_tokens_num:]
+        # lidar_keys_pos, image_keys_pos = key_pos[:, :lidar_tokens_num], key_pos[:, lidar_tokens_num:]
+        # lidar_keys_padding_mask, image_keys_padding_mask = key_padding_mask[:, :lidar_tokens_num], key_padding_mask[:, lidar_tokens_num:]
+        with torch.autocast('cuda'):
+            box_query = self.box_cross_attn(
+                query=query,
+                key=box_key,
+                value=box_key, #+ key_pos
+                query_pos=query_pos,
+                key_pos=box_key_pos,
+                attn_mask=box_cross_attn_mask,
+                key_padding_mask=box_key_padding_mask,
+                **kwargs)
+        box_query = self.norms[1](box_query)
+        box_query = self.box_ffn(box_query)
+        box_query = self.norms[2](box_query)
+
+        with torch.autocast('cuda'):
+            cls_query = self.cls_cross_attn(
+                query=query,
+                key=cls_key,
+                value=cls_key, #+ key_pos
+                query_pos=query_pos,
+                key_pos=cls_key_pos,
+                attn_mask=cls_cross_attn_mask,
+                key_padding_mask=cls_key_padding_mask,
+                **kwargs)
+        cls_query = self.norms[3](cls_query)
+        cls_query = self.cls_ffn(cls_query)
+        cls_query = self.norms[4](cls_query)
+        
+        #query = query.transpose(1, 2)
         return box_query, cls_query
