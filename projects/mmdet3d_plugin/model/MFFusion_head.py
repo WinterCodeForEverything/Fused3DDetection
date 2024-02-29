@@ -28,6 +28,7 @@ from mmdet3d.structures.ops.iou3d_calculator import bbox_overlaps_3d, bbox_overl
 from .utils import draw_bool_heatmap        #, weighted_furthest_point_sample
 
 from torch_scatter import scatter_mean
+from mmcv.cnn.bricks.transformer import build_transformer_layer_sequence
 #from mmcv.cnn.bricks.transformer import  MultiheadAttention
 
 
@@ -202,7 +203,8 @@ class MFFusionHead(nn.Module):
         # )
         #self.center_decoder = MODELS.build(decoder_layer)
         #self.center_attn = MultiheadAttention(**center_attn_cfg)
-        self.center_transformer_decoder = MODELS.build(center_decoder_cfg)
+        #self.center_transformer_decoder = MODELS.build(center_decoder_cfg)
+        self.center_transformer_decoder = build_transformer_layer_sequence(center_decoder_cfg)
         self.center_head = MFSeparateHead( hidden_channel,
                                              center_head,
                                              conv_cfg=conv_cfg,

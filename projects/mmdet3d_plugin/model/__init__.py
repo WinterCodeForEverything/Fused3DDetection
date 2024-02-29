@@ -1,6 +1,7 @@
 from .MFFusion import MFDetector
 from .MFFusion_head import MFFusionHead
-from .transformer import  MFDeformableDetrTransformerDecoderLayer #CenterTransformerDecoderLayer,
+from .transformer import  (MFDeformableDetrTransformerDecoderLayer, CenterTransformerDecoderLayer,
+                         CenterDetrTransformerDecoder)
 from .transforms_3d import (ImageAug3D, MFFusionRandomFlip3D,
                              MFFusionGlobalRotScaleTrans )
 from .utils import (BBoxBEVL1Cost, HeuristicAssigner3D, HungarianAssigner3D,
@@ -26,6 +27,7 @@ __all__ = [
     'BEVFusionSparseEncoder', 'MFPointSAModule',
     'MFNuScenesMetric', 'MFDeformableDetrTransformerDecoderLayer',
     'MFSeparateHead', 'RDIoULoss', 'SoftFocalLoss', 'GeneralizedLSSFPN',
+    'CenterTransformerDecoderLayer', 'CenterDetrTransformerDecoder'
 ]
 
 

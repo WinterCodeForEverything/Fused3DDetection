@@ -1,7 +1,7 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import warnings
 from typing import Optional, Tuple, Union
-from mmdet.models import  DetrTransformerDecoderLayer
+from mmdet.models import  DetrTransformerDecoderLayer, DetrTransformerDecoder
 import torch
 from torch import Tensor, nn
 
@@ -499,6 +499,84 @@ class CenterTransformerDecoderLayer(DetrTransformerDecoderLayer):
         #query = query.transpose(1, 2)
         return query
 
+
+@MODELS.register_module()
+class CenterDetrTransformerDecoder(DetrTransformerDecoder):
+    """Decoder of DETR.
+
+    Args:
+        num_layers (int): Number of decoder layers.
+        layer_cfg (:obj:`ConfigDict` or dict): the config of each encoder
+            layer. All the layers will share the same config.
+        post_norm_cfg (:obj:`ConfigDict` or dict, optional): Config of the
+            post normalization layer. Defaults to `LN`.
+        return_intermediate (bool, optional): Whether to return outputs of
+            intermediate layers. Defaults to `True`,
+        init_cfg (:obj:`ConfigDict` or dict, optional): the config to control
+            the initialization. Defaults to None.
+    """
+
+    def __init__(self,
+                  **kwargs) -> None:
+        super().__init__(**kwargs)
+
+    def _init_layers(self) -> None:
+        """Initialize decoder layers."""
+        self.layers = ModuleList([
+            CenterTransformerDecoderLayer(**self.layer_cfg)
+            for _ in range(self.num_layers)
+        ])
+        self.embed_dims = self.layers[0].embed_dims
+        self.post_norm = build_norm_layer(self.post_norm_cfg,
+                                          self.embed_dims)[1]
+
+    def forward(self,
+                query: Tensor,
+                key: Tensor = None,
+                value: Tensor = None,
+                query_pos: Tensor = None,
+                key_pos: Tensor = None,
+                self_attn_mask: Tensor = None,
+                cross_attn_mask: Tensor = None,
+                key_padding_mask: Tensor = None,
+                **kwargs) -> Tensor:
+        """Forward function of decoder
+        Args:
+            query (Tensor): The input query, has shape (bs, num_queries, dim).
+            key (Tensor): The input key, has shape (bs, num_keys, dim).
+            value (Tensor): The input value with the same shape as `key`.
+            query_pos (Tensor): The positional encoding for `query`, with the
+                same shape as `query`.
+            key_pos (Tensor): The positional encoding for `key`, with the
+                same shape as `key`.
+            key_padding_mask (Tensor): The `key_padding_mask` of `cross_attn`
+                input. ByteTensor, has shape (bs, num_value).
+
+        Returns:
+            Tensor: The forwarded results will have shape
+            (num_decoder_layers, bs, num_queries, dim) if
+            `return_intermediate` is `True` else (1, bs, num_queries, dim).
+        """
+        intermediate = []
+        for layer in self.layers:
+            query = layer(
+                query,
+                key=key,
+                value=value,
+                query_pos=query_pos,
+                key_pos=key_pos,
+                self_attn_mask=self_attn_mask,
+                cross_attn_mask=cross_attn_mask,
+                key_padding_mask=key_padding_mask,
+                **kwargs)
+            if self.return_intermediate:
+                intermediate.append(self.post_norm(query))
+        query = self.post_norm(query)
+
+        if self.return_intermediate:
+            return torch.stack(intermediate)
+
+        return query
 
 
 

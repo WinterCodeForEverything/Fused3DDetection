@@ -123,19 +123,36 @@ model = dict(
         #     ),
         #     norm_cfg=dict(type='LN'),
         # ),
-       center_decoder_cfg=dict(
-            type='CenterTransformerDecoderLayer',
-            self_attn_cfg=dict(embed_dims=256, num_heads=8, dropout=0.1),
-            cross_attn_cfg=dict(embed_dims=256, num_heads=8, dropout=0.1),
-            ffn_cfg=dict(
-                embed_dims=256,
-                feedforward_channels=1024,
-                num_fcs=2,
-                ffn_drop=0.1,
-                act_cfg=dict(type='ReLU', inplace=True),
-            ),
-            norm_cfg=dict(type='LN'),
+        center_decoder_cfg=dict(
+            type='CenterDetrTransformerDecoder',
+            num_layers=3,
+            return_intermediate=False,
+            layer_cfg=dict(
+                #type='CenterTransformerDecoderLayer',
+                self_attn_cfg=dict(embed_dims=256, num_heads=8, dropout=0.1),
+                cross_attn_cfg=dict(embed_dims=256, num_heads=8, dropout=0.1),
+                ffn_cfg=dict(
+                    embed_dims=256,
+                    feedforward_channels=1024,
+                    num_fcs=2,
+                    ffn_drop=0.1,
+                    act_cfg=dict(type='ReLU', inplace=True),
+                ),
+                norm_cfg=dict(type='LN')),
         ),
+        # center_decoder_cfg=dict(
+        #     type='CenterTransformerDecoderLayer',
+        #     self_attn_cfg=dict(embed_dims=256, num_heads=8, dropout=0.1),
+        #     cross_attn_cfg=dict(embed_dims=256, num_heads=8, dropout=0.1),
+        #     ffn_cfg=dict(
+        #         embed_dims=256,
+        #         feedforward_channels=1024,
+        #         num_fcs=2,
+        #         ffn_drop=0.1,
+        #         act_cfg=dict(type='ReLU', inplace=True),
+        #     ),
+        #     norm_cfg=dict(type='LN'),
+        # ),
         decoder_cfg=dict(
             type='MFTransformerDecoderLayer',
             self_attn_cfg=dict(embed_dims=256, num_heads=8, dropout=0.1),
@@ -457,7 +474,7 @@ optim_wrapper = dict(
 #   - `enable` means enable scaling LR automatically
 #       or not by default.
 #   - `base_batch_size` = (8 GPUs) x (4 samples per GPU).
-auto_scale_lr = dict(enable=False, base_batch_size= 4*_base_.train_batch_size )
+auto_scale_lr = dict(enable=False, base_batch_size= 4*_base_.train_batch_size )  #4*_base_.train_batch_size
 log_processor = dict(window_size=50)
 #load_from= '/mnt/data/chao.liu/checkpoints/rose4_4_decuple_transformer/epoch_20.pth'
 
@@ -466,18 +483,18 @@ default_hooks = dict(
     checkpoint=dict(type='CheckpointHook', interval=4)
     )
 custom_hooks = [dict(type='DisableObjectSampleHook', disable_after_epoch=15)]
-# vis_backends = [
-#     dict(type='LocalVisBackend'),
-#     #dict(type='TensorboardVisBackend'),
-#     dict(type='WandbVisBackend',
-#          init_kwargs={
-#             'project': _base_.wandb_project,
-#             'name': _base_.wandb_group,
-#          },
-#          #log_checkpoint=True,
-#          )
-# ]
-# visualizer = dict(
-#     type='Det3DLocalVisualizer', vis_backends=vis_backends, name='visualizer')
+vis_backends = [
+    dict(type='LocalVisBackend'),
+    #dict(type='TensorboardVisBackend'),
+    dict(type='WandbVisBackend',
+         init_kwargs={
+            'project': _base_.wandb_project,
+            'name': _base_.wandb_group,
+         },
+         #log_checkpoint=True,
+         )
+]
+visualizer = dict(
+    type='Det3DLocalVisualizer', vis_backends=vis_backends, name='visualizer')
 
 #load_from ='/mnt/data/users/chao.liu/checkpoints/deformable_decouple_lidar/epoch_4.pth'
