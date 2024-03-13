@@ -63,7 +63,7 @@ model = dict(
     pts_bbox_head=dict(
         type='MFFusionHead',
         num_proposals=200,
-        in_channels=768,
+        in_channels=512,
         hidden_channel=inter_channel,
         num_classes= len(class_names),
         nms_kernel_size=3,
@@ -166,6 +166,20 @@ model = dict(
     ),
 )
 
+img_norm_cfg = dict(
+    mean=[103.530, 116.280, 123.675], std=[57.375, 57.120, 58.395], to_rgb=False)
+    
+ida_aug_conf = {
+        "resize_lim": (0.94, 1.25),
+        "final_dim": (640, 1600),
+        "bot_pct_lim": (0.0, 0.0),
+        "rot_lim": (0.0, 0.0),
+        "H": 900,
+        "W": 1600,
+        "rand_flip": True,
+    }
+
+
 #db_sampler= _base_.db_sampler
 train_pipeline = [
     dict(
@@ -185,25 +199,42 @@ train_pipeline = [
         use_dim=[0, 1, 2, 3, 4],
     ),
     dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True),
-    dict(
-        type='ImageAug3D',
-        final_dim=[640, 1600],
-        resize_lim=[0.94, 1.25],
-        bot_pct_lim=[0.0, 0.0],
-        rot_lim=[0.0, 0.0],
-        rand_flip=True,
-        is_train=True),
+    # dict(
+    #     type='ImageAug3D',
+    #     final_dim=[640, 1600],
+    #     resize_lim=[0.94, 1.25],
+    #     bot_pct_lim=[0.0, 0.0],
+    #     rot_lim=[0.0, 0.0],
+    #     rand_flip=True,
+    #     is_train=True),
     dict(type='ObjectSample', db_sampler = _base_.db_sampler ),
+    # dict(
+    #     type='MFFusionGlobalRotScaleTrans',
+    #     scale_ratio_range=[0.9, 1.1],
+    #     rot_range=[-0.78539816, 0.78539816],
+    #     translation_std=0.5),
+    # dict(type='MFFusionRandomFlip3D'),
+    dict(type='ModalMask3D', mode='train'),
     dict(
-        type='MFFusionGlobalRotScaleTrans',
+        type='GlobalRotScaleTransAll',
+        rot_range=[-0.3925 * 2, 0.3925 * 2],
         scale_ratio_range=[0.9, 1.1],
-        rot_range=[-0.78539816, 0.78539816],
-        translation_std=0.5),
-    dict(type='MFFusionRandomFlip3D'),
+        translation_std=[0.5, 0.5, 0.5]),
+    dict(
+        type='CustomRandomFlip3D',
+        sync_2d=False,
+        flip_ratio_bev_horizontal=0.5,
+        flip_ratio_bev_vertical=0.5),
+
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectNameFilter', classes=class_names),
     dict(type='PointShuffle'),
+    dict(type='ResizeCropFlipImage', data_aug_conf = ida_aug_conf, training=True),
+    dict(type='NormalizeMultiviewImage', **img_norm_cfg),
+    dict(type='PadMultiViewImage', size_divisor=32),
+    dict(type='DefaultFormatBundle3D', class_names=class_names),
+    
     dict(
         type='Pack3DDetInputs',
         keys=[
@@ -238,14 +269,35 @@ test_pipeline = [
         to_float32=True,
         color_type='color',
         backend_args=backend_args),
-    dict(
-        type='ImageAug3D',
-        final_dim=[640, 1600],
-        resize_lim=[0.94, 1.25],
-        bot_pct_lim=[0.0, 0.0],
-        rot_lim=[0.0, 0.0],
-        rand_flip=False,
-        is_train=False),
+    # dict(
+    #     type='ImageAug3D',
+    #     final_dim=[640, 1600],
+    #     resize_lim=[0.94, 1.25],
+    #     bot_pct_lim=[0.0, 0.0],
+    #     rot_lim=[0.0, 0.0],
+    #     rand_flip=False,
+    #     is_train=False),
+   dict(
+        type='MultiScaleFlipAug3D',
+        img_scale=(1333, 800),
+        pts_scale_ratio=1,
+        flip=False,
+        transforms=[
+            dict(
+                type='GlobalRotScaleTrans',
+                rot_range=[0, 0],
+                scale_ratio_range=[1.0, 1.0],
+                translation_std=[0, 0, 0]),
+            dict(type='RandomFlip3D'),
+            dict(type='ResizeCropFlipImage', data_aug_conf = ida_aug_conf, training=False),
+            dict(type='NormalizeMultiviewImage', **img_norm_cfg),
+            dict(type='PadMultiViewImage', size_divisor=32),
+            dict(
+                type='DefaultFormatBundle3D',
+                class_names=class_names,
+                with_label=False),
+            dict(type='Collect3D', keys=['points', 'img'])
+        ]),
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
     dict(
         type='Pack3DDetInputs',
@@ -356,7 +408,7 @@ param_scheduler = [
 ]
 
 # runtime settings
-train_cfg = dict(by_epoch=True, max_epochs=6, val_interval=2)
+train_cfg = dict(by_epoch=True, max_epochs=6, val_interval=1)
 val_cfg = dict()
 test_cfg = dict()
 
@@ -374,8 +426,8 @@ optim_wrapper = dict(
 #   - `enable` means enable scaling LR automatically
 #       or not by default.
 #   - `base_batch_size` = (8 GPUs) x (4 samples per GPU).
-auto_scale_lr = dict(enable=False, base_batch_size= 4*_base_.train_batch_size )
-
+auto_scale_lr = dict(enable=False, base_batch_size= 32 )   # 4*_base_.train_batch_size
+ 
 default_hooks = dict(
    logger=dict(type='LoggerHook', interval=50),
    checkpoint=dict(type='CheckpointHook', interval=1))

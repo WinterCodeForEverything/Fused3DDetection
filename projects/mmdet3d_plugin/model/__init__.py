@@ -4,6 +4,7 @@ from .transformer import  (MFDeformableDetrTransformerDecoderLayer, CenterTransf
                          CenterDetrTransformerDecoder)
 from .transforms_3d import (ImageAug3D, MFFusionRandomFlip3D,
                              MFFusionGlobalRotScaleTrans )
+from .transforms_3d_cmt import *
 from .utils import (BBoxBEVL1Cost, HeuristicAssigner3D, HungarianAssigner3D,
                     IoU3DCost)
 from .vovnetcp import VoVNetCP
@@ -27,7 +28,8 @@ __all__ = [
     'BEVFusionSparseEncoder', 'MFPointSAModule',
     'MFNuScenesMetric', 'MFDeformableDetrTransformerDecoderLayer',
     'MFSeparateHead', 'RDIoULoss', 'SoftFocalLoss', 'GeneralizedLSSFPN',
-    'CenterTransformerDecoderLayer', 'CenterDetrTransformerDecoder'
+    'CenterTransformerDecoderLayer', 'CenterDetrTransformerDecoder',
+    'GlobalRotScaleTransAll', 'CustomRandomFlip3D',
 ]
 
 
