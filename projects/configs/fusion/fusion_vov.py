@@ -102,7 +102,17 @@ train_pipeline = [
     # dict(type='NormalizeMultiviewImage', **img_norm_cfg),
     # dict(type='PadMultiViewImage', size_divisor=32),
     #dict(type='DefaultFormatBundle3D', class_names=class_names),
-    
+    dict(
+        type='GridMask',
+        use_h=True,
+        use_w=True,
+        max_epoch=6,
+        rotate=1,
+        offset=False,
+        ratio=0.5,
+        mode=1,
+        prob=0.0,
+        fixed_prob=True),
     dict(
         type='Pack3DDetInputs',
         keys=[
@@ -145,27 +155,27 @@ test_pipeline = [
     #     rot_lim=[0.0, 0.0],
     #     rand_flip=False,
     #     is_train=False),
-   dict(
-        type='MultiScaleFlipAug3D',
-        img_scale=(1333, 800),
-        pts_scale_ratio=1,
-        flip=False,
-        transforms=[
-            dict(
-                type='GlobalRotScaleTrans',
-                rot_range=[0, 0],
-                scale_ratio_range=[1.0, 1.0],
-                translation_std=[0, 0, 0]),
-            dict(type='RandomFlip3D'),
-            dict(type='ResizeCropFlipImage', data_aug_conf = ida_aug_conf, training=False),
-            dict(type='NormalizeMultiviewImage', **img_norm_cfg),
-            dict(type='PadMultiViewImage', size_divisor=32),
-            # dict(
-            #     type='DefaultFormatBundle3D',
-            #     class_names=class_names,
-            #     with_label=False),
-            # dict(type='Collect3D', keys=['points', 'img'])
-        ]),
+#    dict(
+#         type='MultiScaleFlipAug3D',
+#         img_scale=(1333, 800),
+#         pts_scale_ratio=1,
+#         flip=False,
+#         transforms=[
+#             dict(
+#                 type='GlobalRotScaleTrans',
+#                 rot_range=[0, 0],
+#                 scale_ratio_range=[1.0, 1.0],
+#                 translation_std=[0, 0, 0]),
+#             dict(type='RandomFlip3D'),
+#             dict(type='ResizeCropFlipImage', data_aug_conf = ida_aug_conf, training=False),
+#             dict(type='NormalizeMultiviewImage', **img_norm_cfg),
+#             dict(type='PadMultiViewImage', size_divisor=32),
+#             # dict(
+#             #     type='DefaultFormatBundle3D',
+#             #     class_names=class_names,
+#             #     with_label=False),
+#             # dict(type='Collect3D', keys=['points', 'img'])
+#         ]),
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
     dict(
         type='Pack3DDetInputs',
