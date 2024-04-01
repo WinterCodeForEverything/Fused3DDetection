@@ -202,24 +202,25 @@ class MFDetector(MVXTwoStageDetector):
         coors_batch = torch.cat(coors_batch, dim=0)
         return voxels, num_points, coors_batch
 
+
     def extract_voxel_feat(self, points):
         
-        voxel_feats_dict = dict()
+        #voxel_feats_dict = dict()
         voxels, num_points, coors = self.voxelize(points)
         voxel_features = self.pts_voxel_encoder(voxels, num_points, coors,
                                                 )
         batch_size = coors[-1, 0] + 1
-        voxel_feats_dict['spatial_feats'], voxel_feats_dict[
-            'multi_scale_3d_feats'] = self.pts_middle_encoder(voxel_features, coors, batch_size)
+        x = self.pts_middle_encoder(voxel_features, coors, batch_size)
         #print(voxel_feats_dict['spatial_feats'].shape)
         # for td_feat in voxel_feats_dict['multi_scale_3d_feats']:
         #     print( td_feat.dense().shape )
         
         
-        voxel_feats_dict['pillar_feats'] = self.pts_backbone(voxel_feats_dict['spatial_feats'])
-        voxel_feats_dict['pillar_feats'] = self.pts_neck(voxel_feats_dict['pillar_feats'])[0]
+        x = self.pts_backbone(x)
+        x = self.pts_neck(x)
+        #print(len(x))
         #print(voxel_feats_dict['spatial_feats'].shape)
-        return voxel_feats_dict
+        return x
     
     def normalize_points(self, points ) -> torch.Tensor:
         sample_points = []
@@ -251,13 +252,13 @@ class MFDetector(MVXTwoStageDetector):
              tuple: Two elements in tuple arrange as
              image features and point cloud features.
         """
+        #print(batch_inputs_dict.keys())
         imgs = batch_inputs_dict.get('imgs', None)
         points = batch_inputs_dict.get('points', None)
         img_feats = self.extract_img_feat2(imgs, batch_input_metas)
-        voxel_feats_dict = self.extract_voxel_feat(points)
-
-        normal_points = self.normalize_points( points )
-        return ( normal_points, voxel_feats_dict, img_feats )
+        lidar_feats = self.extract_voxel_feat(points)
+        
+        return ( lidar_feats, img_feats )
 
     def loss(self, batch_inputs_dict: Dict[List, torch.Tensor],
              batch_data_samples: List[Det3DDataSample],
@@ -279,9 +280,9 @@ class MFDetector(MVXTwoStageDetector):
 
         """
         batch_input_metas = [item.metainfo for item in batch_data_samples]
-        points, voxel_feats_dict, img_feats = self.extract_feat(batch_inputs_dict,
+        lidar_feats, img_feats = self.extract_feat(batch_inputs_dict,
                                                  batch_input_metas)
-        losses = self.pts_bbox_head.loss(points, voxel_feats_dict, img_feats, batch_data_samples
+        losses = self.pts_bbox_head.loss( lidar_feats, img_feats, batch_data_samples
                                         )
         return losses
 
@@ -356,10 +357,10 @@ class MFDetector(MVXTwoStageDetector):
         batch_input_metas = [item.metainfo for item in batch_data_samples]
         
         
-        points, voxel_feats_dict, img_feats = self.extract_feat(batch_inputs_dict,
+        lidar_feats, img_feats = self.extract_feat(batch_inputs_dict,
                                                  batch_input_metas)
         results = self.pts_bbox_head.predict(
-            points, voxel_feats_dict, img_feats, batch_data_samples )
+            lidar_feats, img_feats, batch_input_metas )
 
         detsamples = self.add_pred_to_datasample(batch_data_samples,
                                                  results,

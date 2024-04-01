@@ -144,9 +144,9 @@ class MFFusionRandomFlip3D:
         data['lidar_aug_matrix'][:3, :] = rotation @ data[
             'lidar_aug_matrix'][:3, :]
         transform = np.eye(4)
-        transform[:3, :3] = rotation.T
+        transform[:3, :3] = rotation
         for i, lidar2img in enumerate(data['lidar2img']):
-            data['lidar2img'][i] = lidar2img @ transform
+            data['lidar2img'][i] = lidar2img @ np.linalg.inv( transform )
         return data
 
 

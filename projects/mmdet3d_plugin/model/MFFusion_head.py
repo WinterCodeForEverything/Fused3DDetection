@@ -239,31 +239,6 @@ class MFFusionHead(nn.Module):
             sample_mode = self.test_cfg.sample_mode
         assert sample_mode in ['vote', 'seed', 'random', 'spec']
         return sample_mode
-        
-    # def compute_seed_feature(self, seed_points, bev_feature, bev_pos ):
-    #     # seed_points: (B, N, 3)
-    #     # bev_feature: (B, C, M )
-    #     # bev_pos: (B, M, 2)
-    #     #=> seed_feature: (B, C, N)
-        
-    #     bev_feature = bev_feature.permute(0, 2, 1).contiguous()
-    #     cfg = self.train_cfg if self.train_cfg else self.test_cfg
-    #     voxel_size = seed_points.new_tensor(cfg['voxel_size']) 
-               
-    #     seed_xy = seed_points[..., :2].flip(-1)
-    #     bev_seed_xy = (seed_xy - seed_xy.new_tensor(self.pc_range[:2])) / voxel_size[:2] / cfg['out_size_factor']
-    #     bev_seed_yx = bev_seed_xy.flip(-1)
-    #     bev_seed_yx_expand = bev_seed_yx.unsqueeze(2).repeat(1, 1, bev_pos.shape[1], 1)
-    #     bev_pos_expand = bev_pos.unsqueeze(1).repeat(1, bev_seed_yx.shape[1], 1, 1)
-        
-        
-    #     distance = F.mse_loss(bev_seed_yx_expand, bev_pos_expand, reduction='none').sum(-1)
-    #     #print( distance.shape )
-        
-    #     weight = distance.softmax(dim=-1)
-    #     seed_feature = (bev_feature.unsqueeze(1) * weight.unsqueeze(-1)).sum(dim=-2)
-        
-    #     return seed_feature.permute(0, 2, 1).contiguous()
 
     def coords_bev(self, downsample_factor=1):
         cfg = self.train_cfg if self.train_cfg else self.test_cfg
@@ -332,160 +307,7 @@ class MFFusionHead(nn.Module):
     def query_embed(self, ref_points, img_metas):
         bev_embeds = self._bev_query_embed(ref_points)
         return bev_embeds
-    
-    @torch.no_grad()  
-    def get_front_points_mask( self, points, front_bev_mask ):
-        
-        cfg = self.train_cfg if self.train_cfg else self.test_cfg
-        bev_size = torch.div(points.new_tensor(cfg['grid_size'][:2]), cfg['out_size_factor'], rounding_mode='floor').long()
-        voxel_size = points.new_tensor(cfg['voxel_size'])
-        bev_idx = torch.div((points[..., :2]-points.new_tensor(self.pc_range[:2])), 
-            voxel_size[:2] * cfg['out_size_factor'],
-              rounding_mode='floor').long()
-        assert  ( bev_idx >= 0).all() & (bev_idx <= bev_size).all() 
-        bev_idx[..., 0] = torch.clamp( bev_idx[..., 0], min = 0, max = bev_size[0] - 1 )
-        bev_idx[..., 1] = torch.clamp( bev_idx[..., 1], min = 0, max = bev_size[1] - 1 )
-        idx = bev_idx[..., 1] * bev_size[0] + bev_idx[..., 0]
-
-        #front_bev_mask = front_bev_mask.view( front_bev_mask.shape[0], -1 )
-        front_points_mask = torch.gather( front_bev_mask, dim = -1, index = idx )
-        #front_points_mask = torch.ones_like( idx, dtype=torch.bool )
-        #front_idx = idx.gather( 1, front_idx )
-
-        #front_points_mask = (idx.unsqueeze(-1) == front_idx.unsqueeze(-2)).any(dim = -1)    
-
-        #front_points_mask = None #frontboolmap.gather( index = idx, dim = -1 )
-        return front_points_mask
-    
-    @torch.no_grad()    
-    def get_img_tokens_reference_points( self, front_points, img_feats, img_metas ):
-        _, N, _ = front_points.shape
-        B, V, C, H, W = img_feats.shape
-        image_shape = img_metas[0]['pad_shape']
-        pad_h, pad_w = image_shape[0], image_shape[1]
-        front_points = front_points.unsqueeze(1).repeat(1, V, 1, 1)
-
-        #lidar_aug_matrix = torch.from_numpy(meta['lidar_aug_matrix']).float().to(front_points.device)
-        lidars2imgs = np.stack([meta['lidar2img'] for meta in img_metas])
-        lidars2imgs = torch.from_numpy(lidars2imgs).float().to(front_points.device)
-        #lidars2imgs = torch.from_numpy(np.stack([meta['lidar2img'] for meta in img_metas])).float().to(front_points.device)
-        #img_aug_matrix = torch.from_numpy(meta['img_aug_matrix']).float().to(front_points.device)
-        #lidars2imgs_aug = torch.linalg.inv(lidar_aug_matrix) @ lidars2imgs @ img_aug_matrix[]
-
-
-        proj_points = torch.einsum('bvnd, bvcd -> bvnc', torch.cat([front_points, front_points.new_ones(*front_points.shape[:-1], 1)], dim=-1), lidars2imgs)
-        proj_points =  proj_points.view( B*V, N, -1 )
-        #proj_points_clone = proj_points.clone()
-        z_mask = (proj_points[..., 2:3] > 0) & ( proj_points[..., 2:3] < 1000.0 )
-        proj_points_clone = proj_points[..., :3] / (proj_points[..., 2:3] + z_mask * 1e-6 - (~z_mask) * 1e-6)
-        w_idx = torch.div( proj_points_clone[..., 0]*W, pad_w, rounding_mode='floor').long()
-        h_idx = torch.div( proj_points_clone[..., 1]*H, pad_h, rounding_mode='floor').long()
-
-        mask = ( w_idx < W ) & ( w_idx >= 0 ) & ( h_idx < H ) & ( h_idx >= 0 )
-        mask &= z_mask.squeeze(-1)
-        depth = proj_points[..., 2] 
-        w_idx[~mask], h_idx[~mask], depth[~mask] = W, H, 1000.0
-        ranks = h_idx*W + w_idx
-        sort = ( ranks + depth/1001. ).argsort(dim = -1)
-        
-        # w_idx = w_idx.gather(index = sort, dim = -1)
-        # h_idx = h_idx.gather(index = sort, dim = -1)
-        #depth = depth.gather(index = sort, dim = -1)
-        ranks = ranks.gather(index = sort, dim = -1)
-        front_points = front_points.view(B*V, N, 3)
-        front_points = front_points.gather(index = sort.unsqueeze(-1).expand(-1, -1, 3), dim = 1 )
-        kept = ranks.new_ones(*ranks.shape, dtype=torch.bool)
-        kept[..., 1:] = (ranks[..., 1:] != ranks[..., :-1])
-        
-        reference_points2 = img_feats.new_zeros( B*V, H*W+1, 3 )
-        reference_points_mask2 = img_feats.new_zeros( B*V, H*W+1, dtype=torch.bool )
-        
-        ranks = torch.clamp( ranks, max = H*W )
-        ranks = torch.where( kept, ranks, ranks.new_ones(1)*H*W )
-        reference_points2.scatter_( 1, ranks.unsqueeze(-1).expand(-1, -1, 3), front_points )
-        reference_points_mask2.scatter_( 1, ranks, kept )
-        
-        reference_points2 = reference_points2[:, :-1, :].contiguous().view( B, V,  H, W, -1 )
-        reference_points_mask2 = reference_points_mask2[:, :-1].contiguous().view( B, V,  H, W )
-        #reference_points_mask2 = ~reference_points_mask2
-        
-        return reference_points2, reference_points_mask2
-
-
-    def compute_bev_img_feat( self, img_feats, correspond_points, img_feats_mask ):
-        
-        B, V, C, H, W = img_feats.shape
-        img_feats = img_feats * img_feats_mask.unsqueeze(2).expand(-1, -1, C, -1, -1)
-        correspond_points = correspond_points.view( B, -1, 3 )
-        
-        cfg = self.train_cfg if self.train_cfg else self.test_cfg
-        bev_size = torch.div(img_feats.new_tensor(cfg['grid_size'][:2]), cfg['out_size_factor'], rounding_mode='floor').long()
-        voxel_size = correspond_points.new_tensor(cfg['voxel_size'])
-        bev_idx = torch.div((correspond_points[..., :2]- correspond_points.new_tensor(self.pc_range[:2])), 
-            voxel_size[:2] * cfg['out_size_factor'],
-              rounding_mode='floor').long()
-        assert  ( bev_idx >= 0).all() & (bev_idx <= bev_size).all() 
-        bev_idx[..., 0] = torch.clamp( bev_idx[..., 0], min = 0, max = bev_size[0] - 1 )
-        bev_idx[..., 1] = torch.clamp( bev_idx[..., 1], min = 0, max = bev_size[1] - 1 )
-        bev_idx_flatten = bev_idx[..., 1] * bev_size[0] + bev_idx[..., 0] 
-        #bev_idx_flatten = bev_idx_flatten.view( B, V, -1 )  
-        
-        
-        img_feats_flatten = img_feats.permute(0, 2, 1, 3, 4).contiguous().view( B, C, -1 )
-        bev_img_feats_flatten = img_feats.new_zeros( B, C, bev_size[0]*bev_size[1] )
-        scatter_mean( img_feats_flatten, bev_idx_flatten.unsqueeze(-2).expand(-1, C, -1), -1, out = bev_img_feats_flatten )
-        bev_img_feats = bev_img_feats_flatten.view( B, C, bev_size[0], bev_size[1] )
-        
-        return bev_img_feats
-
-    def compute_frontpoints_corresponding_img_feat( self, front_points, img_feats, img_metas ):
-        _, N, _ = front_points.shape
-        B, V, C, H, W = img_feats.shape
-        image_shape = img_metas[0]['pad_shape']
-        pad_h, pad_w = image_shape[0], image_shape[1]
-        front_points = front_points.unsqueeze(1).repeat(1, V, 1, 1)
-
-        #lidar_aug_matrix = torch.from_numpy(meta['lidar_aug_matrix']).float().to(front_points.device)
-        lidars2imgs = np.stack([meta['lidar2img'] for meta in img_metas])
-        lidars2imgs = torch.from_numpy(lidars2imgs).float().to(front_points.device)
-        #lidars2imgs = torch.from_numpy(np.stack([meta['lidar2img'] for meta in img_metas])).float().to(front_points.device)
-        #img_aug_matrix = torch.from_numpy(meta['img_aug_matrix']).float().to(front_points.device)
-        #lidars2imgs_aug = torch.linalg.inv(lidar_aug_matrix) @ lidars2imgs @ img_aug_matrix[]
-
-
-        proj_points = torch.einsum('bvnd, bvcd -> bvnc', torch.cat([front_points, front_points.new_ones(*front_points.shape[:-1], 1)], dim=-1), lidars2imgs)
-        z_mask = ( proj_points[..., 2:3] > 0 ) & ( proj_points[..., 2:3] < 1000.0 )
-        proj_points_clone = proj_points[..., :3] / (proj_points[..., 2:3] + z_mask * 1e-6 - (~z_mask) * 1e-6)
-        w_idx = torch.div( proj_points_clone[..., 0]*W, pad_w, rounding_mode='floor').long()
-        h_idx = torch.div( proj_points_clone[..., 1]*H, pad_h, rounding_mode='floor').long() 
-        img_idx = h_idx*W + w_idx     
-          
-        mask = ( w_idx < W ) & ( w_idx >= 0 ) & ( h_idx < H ) & ( h_idx >= 0 )
-        mask &= z_mask.squeeze(-1)
-        img_idx[~mask] = H*W   
-        img_feats_flatten = img_feats.view( B, V, C, H*W ) 
-        img_feats_flatten = torch.cat( (img_feats_flatten, img_feats_flatten.new_zeros( B, V, C, 1 )), dim = -1 )
-        frontpoints_img_feat = img_feats_flatten.gather( dim = -1, index = img_idx.unsqueeze(-2).expand(-1, -1, C, -1) )
-        frontpoints_aggregate_img_feat = frontpoints_img_feat.mean( dim = 1 )
-        #print( frontpoints_aggregate_img_feat.shape )
-        
-        return frontpoints_aggregate_img_feat
-           
-        
-
-
-    def padding_points_set_to_same_length(self, points_set: List[torch.Tensor],
-                        padding_point: torch.Tensor = torch.tensor([0.0, 0.0, 0.0]),
-                        padding_length = None):
-        #B = len( points_set )
-        if padding_length is None:
-            padding_length = max( [points.shape[0] for points in points_set] )
-        #max_len = max( [points.shape[0] for points in points_set] )
-        points_set_padded = [torch.cat((points, padding_point.unsqueeze(0).repeat(padding_length - points.shape[0], 1).to(points.device)), dim = 0) for points in points_set]
-        points_set_padded = torch.stack( points_set_padded, dim = 0 )
-        
-        return points_set_padded
-    
+   
     def query_denoising(self, feat_bev_flatten, bev_pos, batch_data_samples ):
         
         batch_gt_bboxes = [data_sample.gt_instances_3d.bboxes_3d.tensor.to(feat_bev_flatten.device)
@@ -687,46 +509,12 @@ class MFFusionHead(nn.Module):
 
         return front_bev_dix[:, :-1].contiguous()       
     
-    def forward_single(self, points, voxel_feats_dict, img_feats, batch_data_samples):
+    def forward_single(self, lidar_feats, img_feats, metas):
         
-        #print( img_feats.shape )
         self.num_proposals = self.num_proposals_ori
-        #print("3:", len(voxel_feats_dict['spatial_feats']) )
-        #spatial_feat = voxel_feats_dict['spatial_feats']
-        pillar_feat = voxel_feats_dict['pillar_feats']
+        pillar_feat = lidar_feats
         
         batch_size, _, H, W = pillar_feat.shape
-        
-        cfg = self.train_cfg if self.train_cfg else self.test_cfg
-        start_points = pillar_feat.new_tensor(cfg['point_cloud_range'][:3])
-        points = self.padding_points_set_to_same_length( points, start_points )
-        
-        # if img_feats is not None:
-        #     # with torch.autocast('cuda', enabled=False):
-        #     #     frontscore = self.frontmap_head( feat_pc.float() ).squeeze(1)
-        #     # frontmap = frontscore.detach().sigmoid()
-        #     # front_num = H*W*0.3
-        #     # front_num = int(front_num)
-        #     # frontmap = frontmap.view(batch_size, -1)
-        #     # front_idx = frontmap.argsort(
-        #     #     dim=-1, descending=True)[..., :front_num]
-        #     # front_bev_mask = frontmap.new_zeros( frontmap.shape, dtype=torch.bool )
-        #     # front_bev_mask.scatter_( dim = -1, index = front_idx, value= True )
-        #     # front_points_mask = self.get_front_points_mask( points, front_bev_mask )
-        #     # front_points = [ points[i, front_points_mask[i]]  for i in range(batch_size) ]
-        #     # front_points = self.padding_points_set_to_same_length( front_points, start_points )
-        #     # print( points.shape )
-        #     # print( front_points.shape )
-        #     #with torch.autocast('cuda'):
-        #     batch_input_metas = [data_sample.metainfo for data_sample in batch_data_samples]
-        #     img_tokens_reference_points, img_tokens_mask = self.get_img_tokens_reference_points( 
-        #         points, img_feats, batch_input_metas )
-            
-        #     bev_img_feats = self.compute_bev_img_feat( img_feats, img_tokens_reference_points, img_tokens_mask )
-        #     feat_bev = torch.cat( ( pillar_feat, bev_img_feats ), dim=1 )
-        #     feat_bev = self.shared_conv(feat_bev)
-        # else:
-        #     feat_bev = self.shared_conv(pillar_feat)
             
         feat_bev = self.shared_conv(pillar_feat)
         #################################
@@ -740,9 +528,8 @@ class MFFusionHead(nn.Module):
         with torch.autocast('cuda', enabled=False):
             dense_heatmap = self.heatmap_head( feat_bev.float() )    #copy.deepcopy(feat_pc.detach())
 
-        heatmap = dense_heatmap.detach().sigmoid()  #.view(batch_size, -1)
-        #frontmap, _ = heatmap.max(dim=1)
-        #print( frontmap.shape )
+        heatmap = dense_heatmap.detach().sigmoid() 
+
         
         padding = self.nms_kernel_size // 2
         local_max = torch.zeros_like(heatmap)
@@ -782,7 +569,6 @@ class MFFusionHead(nn.Module):
         query_pos = bev_pos.gather( dim = 1, index = top_proposals_index.unsqueeze(-1).expand(-1, -1, 2) )
 
         query_pos_embed = self.bev_embedding( self.pos2embed(query_pos, num_pos_feats=self.pos_embed_channel ) )
-        #print( query_pos_embed.shape )
         front_feature = feat_bev_flatten.gather( dim = -1, index = top_proposals_index.unsqueeze(1).expand(-1, feat_bev_flatten.shape[1], -1) )
         query_embed = ( front_feature + query_cat_encoding ).transpose( 1, 2 ).contiguous()
         
@@ -872,110 +658,30 @@ class MFFusionHead(nn.Module):
             query_heatmap_score = torch.cat(query_heatmap_scores, dim=2)
             
             self.num_proposals = self.num_proposals_ori * ( self.multistage_heatmap + 1 )
-            
-              
-        
-        # # query denoising
-        # if self.training:
-        #     denoised_query_embed, denoised_query_pos, denoised_query_pos_embed, gt_mask, mask_size = self.query_denoising( feat_bev_flatten, bev_pos, batch_data_samples )
-        #     query_embed = torch.cat( (query_embed, denoised_query_embed), dim = 1 )
-        #     query_pos = torch.cat( (query_pos, denoised_query_pos), dim = 1 )
-        #     query_pos_embed = torch.cat( (query_pos_embed, denoised_query_pos_embed), dim = 1 )
-            
-        #     # attn_mask = torch.zeros( batch_size, self.num_proposals + mask_size, self.num_proposals + mask_size, dtype=torch.bool ).to(feat_bev_flatten.device)
-        #     # attn_mask[:, self.num_proposals:, :self.num_proposals] = True
-        #     # #attn_mask[:, :self.num_proposals, self.num_proposals:] = True
-        #     # attn_mask[:,self.num_proposals:, self.num_proposals:] = torch.logical_not(gt_mask)
-        #     # attn_mask = attn_mask.unsqueeze(1).expand(-1, self.num_heads, -1, -1).flatten(0,1)
-            
-        #     attn_mask = torch.ones( batch_size, self.num_proposals + mask_size, self.num_proposals + mask_size, dtype=torch.bool ).to(feat_bev_flatten.device)
-        #     attn_mask[:, :, :self.num_proposals] = 0
-        #     attn_mask[:, self.num_proposals:, self.num_proposals:] = torch.logical_not(gt_mask[:, None] & gt_mask[:, :, None])
-        #     attn_mask = attn_mask[:, None, :, :].repeat(1, self.num_heads, 1, 1).flatten(0,1)
-        #     self.num_proposals += mask_size
-
-        # else:
-        #     attn_mask = None
-             
-        # multiscale_inputs = [feat_bev]
-        # if self.multiscale:
-        #     multiscale_inputs.append( self.dconv(multiscale_inputs[-1]) )
-        #     multiscale_inputs.append( self.dconv2(multiscale_inputs[-1]) )
-        # multiscale_inputs_flatten = torch.cat([i.flatten(2,3) for i in multiscale_inputs], dim=-1)
-        
-        ################## Deformable Parameters #############
-        # if not self.multiscale:
-        #     #W, H = lidar_feat.shape[-2:]
-        #     spatial_shapes = torch.as_tensor([ [W, H] ], dtype=torch.long, device='cuda')
-        #     level_start_index = torch.as_tensor([0,], dtype=torch.long, device='cuda')
-        # else:
-        #     spatial_shapes = torch.as_tensor([ i.shape[2:] for i in multiscale_inputs ], dtype=torch.long, device='cuda')
-        #     level_start_index = torch.as_tensor([0, *(torch.cumsum(torch.prod(spatial_shapes, dim=1), dim=0)[:-1])], dtype=torch.long, device='cuda')
-            
-        #     # lidar feat
-        #     #lidar_feat_flatten = multiscale_inputs_flatten
-        #     # bev_pos2 = self.bev_pos2.repeat(batch_size, 1, 1).to(multiscale_inputs_flatten.device)
-        #     # bev_pos4 = self.bev_pos4.repeat(batch_size, 1, 1).to(multiscale_inputs_flatten.device)
-        #     # bev_pos = torch.cat([bev_pos, bev_pos2, bev_pos4], dim=1)        
-        
-        # kwargs = dict(
-        #     spatial_shapes = spatial_shapes,
-        #     level_start_index = level_start_index,
-        #     valid_ratios = torch.ones((batch_size, 1, 2), device='cuda'),
-        # )       
-        
-        # #print(spatial_shapes)
-        # reference_points = query_pos / spatial_shapes[:1].unsqueeze(0).to(query_pos.device)
-        # reference_points = reference_points.unsqueeze(2)
-        # query_embed = self.center_transformer_decoder(             
-        #     query_embed,
-        #     query_pos= query_pos_embed,
-        #     value= multiscale_inputs_flatten.transpose( 1, 2 ).contiguous(),
-        #     reference_points = reference_points,
-        #     #self_attn_mask = attn_mask,
-        #     **kwargs       
-        # )
-        # query_embed = torch.nan_to_num( query_embed )
         
         key_embed = feat_bev_flatten.transpose( 1, 2 ).contiguous()
         key_pos_embed = self.bev_embedding(self.pos2embed( bev_pos, num_pos_feats = self.pos_embed_channel )) 
         
         if img_feats is not None:
-            # with torch.autocast('cuda', enabled=False):
-            #     frontscore = self.frontmap_head( feat_pc.float() ).squeeze(1)
-            # frontmap = frontscore.detach().sigmoid()
-            # front_num = H*W*0.3
-            # front_num = int(front_num)
-            # frontmap = frontmap.view(batch_size, -1)
-            # front_idx = frontmap.argsort(
-            #     dim=-1, descending=True)[..., :front_num]
-            # front_bev_mask = frontmap.new_zeros( frontmap.shape, dtype=torch.bool )
-            # front_bev_mask.scatter_( dim = -1, index = front_idx, value= True )
-            # front_points_mask = self.get_front_points_mask( points, front_bev_mask )
-            # front_points = [ points[i, front_points_mask[i]]  for i in range(batch_size) ]
-            # front_points = self.padding_points_set_to_same_length( front_points, start_points )
-            # print( points.shape )
-            # print( front_points.shape )
-            #with torch.autocast('cuda'):
-            cfg = self.train_cfg if self.train_cfg else self.test_cfg
-            voxel_size = feat_bev.new_tensor(cfg['voxel_size'])   
-            batch_input_metas = [data_sample.metainfo for data_sample in batch_data_samples]
-            img_tokens_reference_points, img_tokens_mask = self.get_img_tokens_reference_points( 
-                points, img_feats, batch_input_metas )
-            
-            img_tokens_reference_points = (img_tokens_reference_points - img_tokens_reference_points.new_tensor(self.pc_range[:3])) / \
-            voxel_size / cfg['out_size_factor']     
-            
             B, V, C, H_, W_ = img_feats.shape
             img_key_embed = img_feats.permute( 0, 1, 3, 4, 2).reshape( B, V*H_*W_, -1 ).contiguous()
+            img_tokens_reference_points, img_tokens_mask = [], []
+            for i in range(B):
+                #print(metas[i].keys())
+                img_tokens_reference_points.append( img_key_embed.new_tensor(metas[i]['points_map']) )
+                img_tokens_mask.append( img_key_embed.new_tensor(metas[i]['points_map_mask'], dtype=torch.bool) )
+            
+            img_tokens_reference_points = torch.stack( img_tokens_reference_points, dim = 0 )
             img_tokens_reference_points = img_tokens_reference_points[..., :2].view( B, V*H_*W_, -1)
+            #print(img_tokens_reference_points[0, :20]) 
             img_key_pos_embed = self.bev_embedding( self.pos2embed(img_tokens_reference_points, num_pos_feats=self.pos_embed_channel ) )
             
             key_embed = torch.cat( (key_embed, img_key_embed), dim = 1 )
             key_pos_embed = torch.cat( (key_pos_embed, img_key_pos_embed), dim = 1 )
             
-            pc_tokens_masks = torch.ones( B, H*W, dtype=torch.bool ).to( points.device )
-            key_masks = torch.cat( (pc_tokens_masks, img_tokens_mask.view(B, V*H_*W_)), dim = 1 )
+            pc_tokens_masks = torch.ones( B, H*W, dtype=torch.bool ).to( key_embed.device )
+            img_tokens_mask = torch.stack( img_tokens_mask, dim = 0 ).view( B, V*H_*W_ )
+            key_masks = torch.cat( (pc_tokens_masks, img_tokens_mask), dim = 1 )
             key_masks = ~key_masks
         
         ################## Tansformer Decoder #############
@@ -984,7 +690,7 @@ class MFFusionHead(nn.Module):
             key=key_embed,
             query_pos=query_pos_embed,
             key_pos=key_pos_embed,
-            key_padding_mask= key_masks,
+            #key_padding_mask= key_masks,
         )
     
         center_dict = self.center_head(query_embed.transpose( 1, 2 ).contiguous())  
@@ -1011,10 +717,10 @@ class MFFusionHead(nn.Module):
             query_pos=query_pos_embed,
             box_key=key_embed,
             box_key_pos=key_pos_embed,
-            box_key_padding_mask= key_masks,
+            #box_key_padding_mask= key_masks,
             cls_key=key_embed,
             cls_key_pos=key_pos_embed,
-            cls_key_padding_mask= key_masks,
+            #cls_key_padding_mask= key_masks,
             )   
         box_embed = torch.nan_to_num( box_embed )
         cls_embed = torch.nan_to_num( cls_embed )
@@ -1038,7 +744,7 @@ class MFFusionHead(nn.Module):
         return [ret_dict]
         
     
-    def forward(self, points, voxel_feats_dict, img_feats, batch_data_samples):
+    def forward(self, lidar_feats, img_feats, metas):
         """Forward pass.
 
         Args:
@@ -1052,11 +758,11 @@ class MFFusionHead(nn.Module):
         #    points = [points]
         # if isinstance(pillar_feat, torch.Tensor):
         #     pillar_feat = [pillar_feat]
-        # if isinstance(voxel_feats, torch.Tensor):
-        #     voxel_feats = [voxel_feats]
+        if isinstance(lidar_feats, torch.Tensor):
+            lidar_feats = [lidar_feats]
         if isinstance(img_feats, torch.Tensor):
             img_feats = [img_feats]
-        res = multi_apply(self.forward_single, [points], [voxel_feats_dict], img_feats, [batch_data_samples])
+        res = multi_apply(self.forward_single, lidar_feats, img_feats, [metas])
         assert len(res) == 1, 'only support one level features.'
         return res
     
@@ -1320,7 +1026,7 @@ class MFFusionHead(nn.Module):
             # float(front_recall),
         )
     
-    def loss(self, points, voxel_feats_dict, img_feats, batch_data_samples):
+    def loss(self, lidar_feats, img_feats, batch_data_samples):
         """Loss function for CenterHead.
 
         Args:
@@ -1331,23 +1037,17 @@ class MFFusionHead(nn.Module):
         Returns:
             dict[str:torch.Tensor]: Loss of heatmap and bbox of each task.
         """
-        if points is None:
-            points = [None]
-        # pillar_feat = voxel_feats_dict.get('spatial_feats', None)
-        # voxel_feats = voxel_feats_dict.get('multi_scale_3d_feats', None)
-        # if pillar_feat is None:
-        #     pillar_feat = [None]
-        # if voxel_feats is None:
-        #     voxel_feats = [None]
-        # else:
-        #     voxel_feats = voxel_feats[-1]
+        if lidar_feats is None:
+            lidar_feats = [None]
+        else:
+            lidar_feats = lidar_feats[-1]
         if img_feats is None:
             img_feats = [None]
         batch_input_metas, batch_gt_instances_3d = [], []
         for data_sample in batch_data_samples:
             batch_input_metas.append(data_sample.metainfo)
             batch_gt_instances_3d.append(data_sample.gt_instances_3d)
-        preds_dicts = self(points, voxel_feats_dict, img_feats, batch_data_samples )
+        preds_dicts = self( lidar_feats, img_feats, batch_input_metas )
         loss = self.loss_by_feat(preds_dicts, batch_gt_instances_3d)
 
         return loss
@@ -1674,11 +1374,168 @@ class MFFusionHead(nn.Module):
 
         return rets[0]  #, additional_metrics
 
-    @staticmethod
-    def _bbox_to_loss(bbox):
-        # axis-aligned case: x, y, z, w, h, l -> x1, y1, z1, x2, y2, z2
-        return torch.stack(
-            (bbox[..., 0] - bbox[..., 3] / 2, bbox[..., 1] - bbox[..., 4] / 2,
-             bbox[..., 2] - bbox[..., 5] / 2, bbox[..., 0] + bbox[..., 3] / 2,
-             bbox[..., 1] + bbox[..., 4] / 2, bbox[..., 2] + bbox[..., 5] / 2),
-            dim=-1)
+    # @staticmethod
+    # def _bbox_to_loss(bbox):
+    #     # axis-aligned case: x, y, z, w, h, l -> x1, y1, z1, x2, y2, z2
+    #     return torch.stack(
+    #         (bbox[..., 0] - bbox[..., 3] / 2, bbox[..., 1] - bbox[..., 4] / 2,
+    #          bbox[..., 2] - bbox[..., 5] / 2, bbox[..., 0] + bbox[..., 3] / 2,
+    #          bbox[..., 1] + bbox[..., 4] / 2, bbox[..., 2] + bbox[..., 5] / 2),
+    #         dim=-1)
+        
+        
+        
+   
+    # @torch.no_grad()  
+    # def get_front_points_mask( self, points, front_bev_mask ):
+        
+    #     cfg = self.train_cfg if self.train_cfg else self.test_cfg
+    #     bev_size = torch.div(points.new_tensor(cfg['grid_size'][:2]), cfg['out_size_factor'], rounding_mode='floor').long()
+    #     voxel_size = points.new_tensor(cfg['voxel_size'])
+    #     bev_idx = torch.div((points[..., :2]-points.new_tensor(self.pc_range[:2])), 
+    #         voxel_size[:2] * cfg['out_size_factor'],
+    #           rounding_mode='floor').long()
+    #     assert  ( bev_idx >= 0).all() & (bev_idx <= bev_size).all() 
+    #     bev_idx[..., 0] = torch.clamp( bev_idx[..., 0], min = 0, max = bev_size[0] - 1 )
+    #     bev_idx[..., 1] = torch.clamp( bev_idx[..., 1], min = 0, max = bev_size[1] - 1 )
+    #     idx = bev_idx[..., 1] * bev_size[0] + bev_idx[..., 0]
+
+    #     #front_bev_mask = front_bev_mask.view( front_bev_mask.shape[0], -1 )
+    #     front_points_mask = torch.gather( front_bev_mask, dim = -1, index = idx )
+    #     #front_points_mask = torch.ones_like( idx, dtype=torch.bool )
+    #     #front_idx = idx.gather( 1, front_idx )
+
+    #     #front_points_mask = (idx.unsqueeze(-1) == front_idx.unsqueeze(-2)).any(dim = -1)    
+
+    #     #front_points_mask = None #frontboolmap.gather( index = idx, dim = -1 )
+    #     return front_points_mask
+    
+    # @torch.no_grad()    
+    # def get_img_tokens_reference_points( self, front_points, img_feats, img_metas ):
+    #     _, N, _ = front_points.shape
+    #     B, V, C, H, W = img_feats.shape
+    #     image_shape = img_metas[0]['pad_shape']
+    #     pad_h, pad_w = image_shape[0], image_shape[1]
+    #     front_points = front_points.unsqueeze(1).repeat(1, V, 1, 1)
+
+    #     #lidar_aug_matrix = torch.from_numpy(meta['lidar_aug_matrix']).float().to(front_points.device)
+    #     lidars2imgs = np.stack([meta['lidar2img'] for meta in img_metas])
+    #     lidars2imgs = torch.from_numpy(lidars2imgs).float().to(front_points.device)
+    #     #lidars2imgs = torch.from_numpy(np.stack([meta['lidar2img'] for meta in img_metas])).float().to(front_points.device)
+    #     #img_aug_matrix = torch.from_numpy(meta['img_aug_matrix']).float().to(front_points.device)
+    #     #lidars2imgs_aug = torch.linalg.inv(lidar_aug_matrix) @ lidars2imgs @ img_aug_matrix[]
+
+
+    #     proj_points = torch.einsum('bvnd, bvcd -> bvnc', torch.cat([front_points, front_points.new_ones(*front_points.shape[:-1], 1)], dim=-1), lidars2imgs)
+    #     proj_points =  proj_points.view( B*V, N, -1 )
+    #     #proj_points_clone = proj_points.clone()
+    #     z_mask = (proj_points[..., 2:3] > 0) & ( proj_points[..., 2:3] < 1000.0 )
+    #     proj_points_clone = proj_points[..., :3] / (proj_points[..., 2:3] + z_mask * 1e-6 - (~z_mask) * 1e-6)
+    #     w_idx = torch.div( proj_points_clone[..., 0]*W, pad_w, rounding_mode='floor').long()
+    #     h_idx = torch.div( proj_points_clone[..., 1]*H, pad_h, rounding_mode='floor').long()
+
+    #     mask = ( w_idx < W ) & ( w_idx >= 0 ) & ( h_idx < H ) & ( h_idx >= 0 )
+    #     mask &= z_mask.squeeze(-1)
+    #     depth = proj_points[..., 2] 
+    #     w_idx[~mask], h_idx[~mask], depth[~mask] = W, H, 1000.0
+    #     ranks = h_idx*W + w_idx
+    #     sort = ( ranks + depth/1001. ).argsort(dim = -1)
+        
+    #     # w_idx = w_idx.gather(index = sort, dim = -1)
+    #     # h_idx = h_idx.gather(index = sort, dim = -1)
+    #     #depth = depth.gather(index = sort, dim = -1)
+    #     ranks = ranks.gather(index = sort, dim = -1)
+    #     front_points = front_points.view(B*V, N, 3)
+    #     front_points = front_points.gather(index = sort.unsqueeze(-1).expand(-1, -1, 3), dim = 1 )
+    #     kept = ranks.new_ones(*ranks.shape, dtype=torch.bool)
+    #     kept[..., 1:] = (ranks[..., 1:] != ranks[..., :-1])
+        
+    #     reference_points2 = img_feats.new_zeros( B*V, H*W+1, 3 )
+    #     reference_points_mask2 = img_feats.new_zeros( B*V, H*W+1, dtype=torch.bool )
+        
+    #     ranks = torch.clamp( ranks, max = H*W )
+    #     ranks = torch.where( kept, ranks, ranks.new_ones(1)*H*W )
+    #     reference_points2.scatter_( 1, ranks.unsqueeze(-1).expand(-1, -1, 3), front_points )
+    #     reference_points_mask2.scatter_( 1, ranks, kept )
+        
+    #     reference_points2 = reference_points2[:, :-1, :].contiguous().view( B, V,  H, W, -1 )
+    #     reference_points_mask2 = reference_points_mask2[:, :-1].contiguous().view( B, V,  H, W )
+    #     #reference_points_mask2 = ~reference_points_mask2
+        
+    #     return reference_points2, reference_points_mask2
+
+
+    # def compute_bev_img_feat( self, img_feats, correspond_points, img_feats_mask ):
+        
+    #     B, V, C, H, W = img_feats.shape
+    #     img_feats = img_feats * img_feats_mask.unsqueeze(2).expand(-1, -1, C, -1, -1)
+    #     correspond_points = correspond_points.view( B, -1, 3 )
+        
+    #     cfg = self.train_cfg if self.train_cfg else self.test_cfg
+    #     bev_size = torch.div(img_feats.new_tensor(cfg['grid_size'][:2]), cfg['out_size_factor'], rounding_mode='floor').long()
+    #     voxel_size = correspond_points.new_tensor(cfg['voxel_size'])
+    #     bev_idx = torch.div((correspond_points[..., :2]- correspond_points.new_tensor(self.pc_range[:2])), 
+    #         voxel_size[:2] * cfg['out_size_factor'],
+    #           rounding_mode='floor').long()
+    #     assert  ( bev_idx >= 0).all() & (bev_idx <= bev_size).all() 
+    #     bev_idx[..., 0] = torch.clamp( bev_idx[..., 0], min = 0, max = bev_size[0] - 1 )
+    #     bev_idx[..., 1] = torch.clamp( bev_idx[..., 1], min = 0, max = bev_size[1] - 1 )
+    #     bev_idx_flatten = bev_idx[..., 1] * bev_size[0] + bev_idx[..., 0] 
+    #     #bev_idx_flatten = bev_idx_flatten.view( B, V, -1 )  
+        
+        
+    #     img_feats_flatten = img_feats.permute(0, 2, 1, 3, 4).contiguous().view( B, C, -1 )
+    #     bev_img_feats_flatten = img_feats.new_zeros( B, C, bev_size[0]*bev_size[1] )
+    #     scatter_mean( img_feats_flatten, bev_idx_flatten.unsqueeze(-2).expand(-1, C, -1), -1, out = bev_img_feats_flatten )
+    #     bev_img_feats = bev_img_feats_flatten.view( B, C, bev_size[0], bev_size[1] )
+        
+    #     return bev_img_feats
+
+    # def compute_frontpoints_corresponding_img_feat( self, front_points, img_feats, img_metas ):
+    #     _, N, _ = front_points.shape
+    #     B, V, C, H, W = img_feats.shape
+    #     image_shape = img_metas[0]['pad_shape']
+    #     pad_h, pad_w = image_shape[0], image_shape[1]
+    #     front_points = front_points.unsqueeze(1).repeat(1, V, 1, 1)
+
+    #     #lidar_aug_matrix = torch.from_numpy(meta['lidar_aug_matrix']).float().to(front_points.device)
+    #     lidars2imgs = np.stack([meta['lidar2img'] for meta in img_metas])
+    #     lidars2imgs = torch.from_numpy(lidars2imgs).float().to(front_points.device)
+    #     #lidars2imgs = torch.from_numpy(np.stack([meta['lidar2img'] for meta in img_metas])).float().to(front_points.device)
+    #     #img_aug_matrix = torch.from_numpy(meta['img_aug_matrix']).float().to(front_points.device)
+    #     #lidars2imgs_aug = torch.linalg.inv(lidar_aug_matrix) @ lidars2imgs @ img_aug_matrix[]
+
+
+    #     proj_points = torch.einsum('bvnd, bvcd -> bvnc', torch.cat([front_points, front_points.new_ones(*front_points.shape[:-1], 1)], dim=-1), lidars2imgs)
+    #     z_mask = ( proj_points[..., 2:3] > 0 ) & ( proj_points[..., 2:3] < 1000.0 )
+    #     proj_points_clone = proj_points[..., :3] / (proj_points[..., 2:3] + z_mask * 1e-6 - (~z_mask) * 1e-6)
+    #     w_idx = torch.div( proj_points_clone[..., 0]*W, pad_w, rounding_mode='floor').long()
+    #     h_idx = torch.div( proj_points_clone[..., 1]*H, pad_h, rounding_mode='floor').long() 
+    #     img_idx = h_idx*W + w_idx     
+          
+    #     mask = ( w_idx < W ) & ( w_idx >= 0 ) & ( h_idx < H ) & ( h_idx >= 0 )
+    #     mask &= z_mask.squeeze(-1)
+    #     img_idx[~mask] = H*W   
+    #     img_feats_flatten = img_feats.view( B, V, C, H*W ) 
+    #     img_feats_flatten = torch.cat( (img_feats_flatten, img_feats_flatten.new_zeros( B, V, C, 1 )), dim = -1 )
+    #     frontpoints_img_feat = img_feats_flatten.gather( dim = -1, index = img_idx.unsqueeze(-2).expand(-1, -1, C, -1) )
+    #     frontpoints_aggregate_img_feat = frontpoints_img_feat.mean( dim = 1 )
+    #     #print( frontpoints_aggregate_img_feat.shape )
+        
+    #     return frontpoints_aggregate_img_feat
+           
+        
+
+
+    # def padding_points_set_to_same_length(self, points_set: List[torch.Tensor],
+    #                     padding_point: torch.Tensor = torch.tensor([0.0, 0.0, 0.0]),
+    #                     padding_length = None):
+    #     #B = len( points_set )
+    #     if padding_length is None:
+    #         padding_length = max( [points.shape[0] for points in points_set] )
+    #     #max_len = max( [points.shape[0] for points in points_set] )
+    #     points_set_padded = [torch.cat((points, padding_point.unsqueeze(0).repeat(padding_length - points.shape[0], 1).to(points.device)), dim = 0) for points in points_set]
+    #     points_set_padded = torch.stack( points_set_padded, dim = 0 )
+        
+    #     return points_set_padded
+  

@@ -216,7 +216,7 @@ class MFMultiViewImageFeatureCorrespondingPoints:
         self.min_dist = min_dist
         self.max_dist = max_dist
     
-    def mask_points_by_range(self, points_2d, depths, img_size):
+    def mask_points_by_range(self, points_3d, points_2d, depths, img_size):
         """
         Args:
             points2d: (N, 2)
@@ -227,64 +227,65 @@ class MFMultiViewImageFeatureCorrespondingPoints:
             depths:   (N', )
         """
         H, W = img_size
-        mask = np.ones(depths.shape, dtype=np.bool)
+        mask = np.ones(depths.shape, dtype=np.bool_)
         mask = np.logical_and(mask, points_2d[:, 0] >= 0)
         mask = np.logical_and(mask, points_2d[:, 0] < W)
         mask = np.logical_and(mask, points_2d[:, 1] >= 0)
         mask = np.logical_and(mask, points_2d[:, 1] < H)
         points_2d = points_2d[mask]
         depths = depths[mask]
-        return points_2d, depths, mask
+        points_3d = points_3d[mask]
+        return points_3d, points_2d, depths
     
-    def mask_points_by_dist(self, points_2d, depths, min_dist, max_dist):
-        mask = np.ones(depths.shape, dtype=np.bool)
+    def mask_points_by_dist(self, points_3d, points_2d, depths, min_dist, max_dist):
+        mask = np.ones(depths.shape, dtype=np.bool_)
         mask = np.logical_and(mask, depths >= min_dist)
         if max_dist is not None:
             mask = np.logical_and(mask, depths <= max_dist)
         points_2d = points_2d[mask]
         depths = depths[mask]
-        return points_2d, depths, mask
+        points_3d = points_3d[mask]
+        return points_3d, points_2d, depths
     
     def __call__(self, data: dict ) -> dict :
         
         #assert 'points' in data
-        points = data['points'][:, :3]
+        points = data['points'].tensor[:, :3].numpy() 
         H, W = self.input_size
         dH, dW = H // self.downsample, W // self.downsample
-        img_shape = data['img_shape']
-        print('img_shape:', img_shape )
-        pad_shape = data['pad_shape']
-        print('pad_shape:', pad_shape )
+        # img_shape = data['img_shape']
+        # print('img_shape:', img_shape )
+        # pad_shape = data['pad_shape']
+        # print('pad_shape:', pad_shape )
         #lidar2imgs = data['lidar2img']
-        points_lidar = np.concatenate([points, points.new_ones(*points.shape[:-1], 1)], axis=-1)
+        points_lidar = np.concatenate([points,  np.ones((points.shape[0], 1))], axis=-1)
         points_maps, points_map_masks = [], []
         for i, lidar2img in enumerate( data['lidar2img']):
-            points_image = points_lidar.dot(lidar2img[i].T)
+            points_image = points_lidar.dot(lidar2img.T)
             points_image = points_image[:, :3]  # (N_points, 3)     3: (du, dv, d)
             points_2d = points_image[:, :2] / points_image[:, 2:3]  # (N_points, 2)     2: (u, v)
             points_2d = np.round(points_2d / self.downsample)
             depths = points_image[:, 2]  # (N_points, )
             
-            mask = np.ones(depths.shape, dtype=np.bool)
-            points_2d, depths, mask_r = self.mask_points_by_range(points_2d, depths, pad_shape )
-            mask = np.logical_and( mask, mask_r )
-            points_2d, depths, mask_d = self.mask_points_by_dist(points_2d, depths, self.min_dist, self.max_dist)
-            mask *= np.logical_and( mask, mask_d )
-            valid_points = points[mask]
+            valid_points = np.copy(points)
+            valid_points, points_2d, depths = self.mask_points_by_range(valid_points, points_2d, depths, (dH, dW) )
+            valid_points, points_2d, depths = self.mask_points_by_dist(valid_points, points_2d, depths, self.min_dist, self.max_dist)
             
             ranks = points_2d[:, 0] + points_2d[:, 1] * dW
             sort = (ranks + depths / 1000.).argsort()
             points_2d, depths, ranks = points_2d[sort], depths[sort], ranks[sort]
+            valid_points = valid_points[sort]
 
-            kept = np.ones(points_2d.shape[0], dtype=np.bool)
+            kept = np.ones(points_2d.shape[0], dtype=np.bool_)
             kept[1:] = (ranks[1:] != ranks[:-1])
             points_2d, depths = points_2d[kept], depths[kept]
-            points_2d = points_2d.astype(np.long)
+            points_2d = points_2d.astype(np.int_)
+            valid_points = valid_points[kept]
             
             points_map = np.zeros((dH, dW, 3), dtype=np.float32)
             points_map[points_2d[:, 1], points_2d[:, 0], :] = valid_points
-            print('points_map:', points_map.shape )
-            points_map_mask = np.zeros((dH, dW), dtype=np.bool)
+            #print('points_map:', points_map.shape )
+            points_map_mask = np.zeros((dH, dW), dtype=np.bool_)
             points_map_mask[points_2d[:, 1], points_2d[:, 0]] = 1
             points_maps.append(points_map)
             points_map_masks.append(points_map_mask)

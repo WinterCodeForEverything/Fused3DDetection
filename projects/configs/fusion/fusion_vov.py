@@ -60,37 +60,37 @@ train_pipeline = [
         use_dim=[0, 1, 2, 3, 4],
     ),
     dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True),
-    # dict(
-    #     type='ImageAug3D',
-    #     final_dim=[640, 1600],
-    #     resize_lim=[0.94, 1.25],
-    #     bot_pct_lim=[0.0, 0.0],
-    #     rot_lim=[0.0, 0.0],
-    #     rand_flip=True,
-    #     is_train=True),
+    dict(
+        type='ImageAug3D',
+        final_dim=[640, 1600],
+        resize_lim=[0.94, 1.25],
+        bot_pct_lim=[0.0, 0.0],
+        rot_lim=[0.0, 0.0],
+        rand_flip=True,
+        is_train=True),
     dict(type='ObjectSample', db_sampler = _base_.db_sampler ),
-    # dict(
-    #     type='MFFusionGlobalRotScaleTrans',
-    #     scale_ratio_range=[0.9, 1.1],
-    #     rot_range=[-0.78539816, 0.78539816],
-    #     translation_std=0.5),
-    # dict(type='MFFusionRandomFlip3D'),
-    dict(type='ModalMask3D', mode='train'),
     dict(
-        type='GlobalRotScaleTransAll',
-        rot_range=[-0.3925 * 2, 0.3925 * 2],
+        type='MFFusionGlobalRotScaleTrans',
         scale_ratio_range=[0.9, 1.1],
-        translation_std=[0.5, 0.5, 0.5]),
-    dict(
-        type='CustomRandomFlip3D',
-        sync_2d=False,
-        flip_ratio_bev_horizontal=0.5,
-        flip_ratio_bev_vertical=0.5),
+        rot_range=[-0.78539816, 0.78539816],
+        translation_std=0.5),
+    dict(type='MFFusionRandomFlip3D'),
+    #dict(type='ModalMask3D', mode='train'),
+    # dict(
+    #     type='GlobalRotScaleTransAll',
+    #     rot_range=[-0.3925 * 2, 0.3925 * 2],
+    #     scale_ratio_range=[0.9, 1.1],
+    #     translation_std=[0.5, 0.5, 0.5]),
+    # dict(
+    #     type='CustomRandomFlip3D',
+    #     sync_2d=False,
+    #     flip_ratio_bev_horizontal=0.5,
+    #     flip_ratio_bev_vertical=0.5),
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectRangeFilter', point_cloud_range=point_cloud_range),
     dict(
         type='MFMultiViewImageFeatureCorrespondingPoints',
-        input_size = (900, 1600),
+        input_size = (640, 1600),
         downsample = 16,
         min_dist = 0.1,
         max_dist = 1000.0,
@@ -98,9 +98,9 @@ train_pipeline = [
     
     dict(type='ObjectNameFilter', classes=class_names),
     dict(type='PointShuffle'),
-    dict(type='ResizeCropFlipImage', data_aug_conf = ida_aug_conf, training=True),
-    dict(type='NormalizeMultiviewImage', **img_norm_cfg),
-    dict(type='PadMultiViewImage', size_divisor=32),
+    #dict(type='ResizeCropFlipImage', data_aug_conf = ida_aug_conf, training=True),
+    # dict(type='NormalizeMultiviewImage', **img_norm_cfg),
+    # dict(type='PadMultiViewImage', size_divisor=32),
     #dict(type='DefaultFormatBundle3D', class_names=class_names),
     
     dict(
@@ -114,7 +114,7 @@ train_pipeline = [
             'ori_lidar2img', 'img_aug_matrix', 'box_type_3d', 'sample_idx',
             'lidar_path', 'img_path', 'transformation_3d_flow', 'pcd_rotation',
             'pcd_scale_factor', 'pcd_trans', 'img_aug_matrix',
-            'lidar_aug_matrix', 'num_pts_feats'
+            'lidar_aug_matrix', 'num_pts_feats', 'points_map', 'points_map_mask'
         ])
 ]
 test_pipeline = [
@@ -267,18 +267,18 @@ default_hooks = dict(
    checkpoint=dict(type='CheckpointHook', interval=1))
 custom_hooks = [dict(type='DisableObjectSampleHook', disable_after_epoch=4)]
 
-vis_backends = [
-    dict(type='LocalVisBackend'),
-    #dict(type='TensorboardVisBackend'),
-    dict(type='WandbVisBackend',
-         init_kwargs={
-            'project': _base_.wandb_project,
-            'name': _base_.wandb_group,
-         },
-         #log_checkpoint=True,
-         )
-]
-visualizer = dict(
-    type='Det3DLocalVisualizer', vis_backends=vis_backends, name='visualizer')
+# vis_backends = [
+#     dict(type='LocalVisBackend'),
+#     #dict(type='TensorboardVisBackend'),
+#     dict(type='WandbVisBackend',
+#          init_kwargs={
+#             'project': _base_.wandb_project,
+#             'name': _base_.wandb_group,
+#          },
+#          #log_checkpoint=True,
+#          )
+# ]
+# visualizer = dict(
+#     type='Det3DLocalVisualizer', vis_backends=vis_backends, name='visualizer')
 
-load_from ='/mnt/data/users/chao.liu/checkpoints/basic_checkpoint/basic_lidar.pth'
+#load_from ='/mnt/data/users/chao.liu/checkpoints/basic_checkpoint/basic_lidar.pth'
