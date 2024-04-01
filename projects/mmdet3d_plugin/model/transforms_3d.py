@@ -144,7 +144,7 @@ class MFFusionRandomFlip3D:
         data['lidar_aug_matrix'][:3, :] = rotation @ data[
             'lidar_aug_matrix'][:3, :]
         transform = np.eye(4)
-        transform[:3, :3] = rotation
+        transform[:3, :3] = rotation.T
         for i, lidar2img in enumerate(data['lidar2img']):
             data['lidar2img'][i] = lidar2img @ transform
         return data
@@ -194,6 +194,8 @@ class MFFusionGlobalRotScaleTrans(GlobalRotScaleTrans):
         return input_dict
 
 
+
+        
 '''
 @TRANSFORMS.register_module()
 class PadMultiViewImage(BaseTransform):

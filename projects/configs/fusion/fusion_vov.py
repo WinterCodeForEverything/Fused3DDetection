@@ -86,15 +86,22 @@ train_pipeline = [
         sync_2d=False,
         flip_ratio_bev_horizontal=0.5,
         flip_ratio_bev_vertical=0.5),
-
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectRangeFilter', point_cloud_range=point_cloud_range),
+    dict(
+        type='MFMultiViewImageFeatureCorrespondingPoints',
+        input_size = (900, 1600),
+        downsample = 16,
+        min_dist = 0.1,
+        max_dist = 1000.0,
+    ),
+    
     dict(type='ObjectNameFilter', classes=class_names),
     dict(type='PointShuffle'),
     dict(type='ResizeCropFlipImage', data_aug_conf = ida_aug_conf, training=True),
     dict(type='NormalizeMultiviewImage', **img_norm_cfg),
     dict(type='PadMultiViewImage', size_divisor=32),
-    dict(type='DefaultFormatBundle3D', class_names=class_names),
+    #dict(type='DefaultFormatBundle3D', class_names=class_names),
     
     dict(
         type='Pack3DDetInputs',
@@ -153,11 +160,11 @@ test_pipeline = [
             dict(type='ResizeCropFlipImage', data_aug_conf = ida_aug_conf, training=False),
             dict(type='NormalizeMultiviewImage', **img_norm_cfg),
             dict(type='PadMultiViewImage', size_divisor=32),
-            dict(
-                type='DefaultFormatBundle3D',
-                class_names=class_names,
-                with_label=False),
-            dict(type='Collect3D', keys=['points', 'img'])
+            # dict(
+            #     type='DefaultFormatBundle3D',
+            #     class_names=class_names,
+            #     with_label=False),
+            # dict(type='Collect3D', keys=['points', 'img'])
         ]),
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
     dict(

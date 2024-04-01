@@ -206,3 +206,93 @@ class BEVLoadMultiViewImageFromFiles(LoadMultiViewImageFromFiles):
         results['num_views'] = self.num_views
         results['num_ref_frames'] = self.num_ref_frames
         return results
+
+@TRANSFORMS.register_module()
+class MFMultiViewImageFeatureCorrespondingPoints:
+    
+    def __init__(self, input_size, downsample=1, min_dist=1e-5, max_dist=None):
+        self.input_size = input_size
+        self.downsample = downsample
+        self.min_dist = min_dist
+        self.max_dist = max_dist
+    
+    def mask_points_by_range(self, points_2d, depths, img_size):
+        """
+        Args:
+            points2d: (N, 2)
+            depths:   (N, )
+            img_size: (H, W)
+        Returns:
+            points2d: (N', 2)
+            depths:   (N', )
+        """
+        H, W = img_size
+        mask = np.ones(depths.shape, dtype=np.bool)
+        mask = np.logical_and(mask, points_2d[:, 0] >= 0)
+        mask = np.logical_and(mask, points_2d[:, 0] < W)
+        mask = np.logical_and(mask, points_2d[:, 1] >= 0)
+        mask = np.logical_and(mask, points_2d[:, 1] < H)
+        points_2d = points_2d[mask]
+        depths = depths[mask]
+        return points_2d, depths, mask
+    
+    def mask_points_by_dist(self, points_2d, depths, min_dist, max_dist):
+        mask = np.ones(depths.shape, dtype=np.bool)
+        mask = np.logical_and(mask, depths >= min_dist)
+        if max_dist is not None:
+            mask = np.logical_and(mask, depths <= max_dist)
+        points_2d = points_2d[mask]
+        depths = depths[mask]
+        return points_2d, depths, mask
+    
+    def __call__(self, data: dict ) -> dict :
+        
+        #assert 'points' in data
+        points = data['points'][:, :3]
+        H, W = self.input_size
+        dH, dW = H // self.downsample, W // self.downsample
+        img_shape = data['img_shape']
+        print('img_shape:', img_shape )
+        pad_shape = data['pad_shape']
+        print('pad_shape:', pad_shape )
+        #lidar2imgs = data['lidar2img']
+        points_lidar = np.concatenate([points, points.new_ones(*points.shape[:-1], 1)], axis=-1)
+        points_maps, points_map_masks = [], []
+        for i, lidar2img in enumerate( data['lidar2img']):
+            points_image = points_lidar.dot(lidar2img[i].T)
+            points_image = points_image[:, :3]  # (N_points, 3)     3: (du, dv, d)
+            points_2d = points_image[:, :2] / points_image[:, 2:3]  # (N_points, 2)     2: (u, v)
+            points_2d = np.round(points_2d / self.downsample)
+            depths = points_image[:, 2]  # (N_points, )
+            
+            mask = np.ones(depths.shape, dtype=np.bool)
+            points_2d, depths, mask_r = self.mask_points_by_range(points_2d, depths, pad_shape )
+            mask = np.logical_and( mask, mask_r )
+            points_2d, depths, mask_d = self.mask_points_by_dist(points_2d, depths, self.min_dist, self.max_dist)
+            mask *= np.logical_and( mask, mask_d )
+            valid_points = points[mask]
+            
+            ranks = points_2d[:, 0] + points_2d[:, 1] * dW
+            sort = (ranks + depths / 1000.).argsort()
+            points_2d, depths, ranks = points_2d[sort], depths[sort], ranks[sort]
+
+            kept = np.ones(points_2d.shape[0], dtype=np.bool)
+            kept[1:] = (ranks[1:] != ranks[:-1])
+            points_2d, depths = points_2d[kept], depths[kept]
+            points_2d = points_2d.astype(np.long)
+            
+            points_map = np.zeros((dH, dW, 3), dtype=np.float32)
+            points_map[points_2d[:, 1], points_2d[:, 0], :] = valid_points
+            print('points_map:', points_map.shape )
+            points_map_mask = np.zeros((dH, dW), dtype=np.bool)
+            points_map_mask[points_2d[:, 1], points_2d[:, 0]] = 1
+            points_maps.append(points_map)
+            points_map_masks.append(points_map_mask)
+            
+        points_map = np.stack(points_maps, axis=0)
+        points_map_mask = np.stack(points_map_masks, axis=0)
+        
+        data['points_map'] = points_map
+        data['points_map_mask'] = points_map_mask
+        
+        return data
