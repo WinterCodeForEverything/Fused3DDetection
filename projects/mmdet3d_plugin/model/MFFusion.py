@@ -120,8 +120,10 @@ class MFDetector(MVXTwoStageDetector):
             B, N, C, H, W = x.size()
             x = x.view(B * N, C, H, W).contiguous()
 
-            x = self.img_backbone(x)
-            x = self.img_neck(x)
+            with torch.autocast('cuda',  dtype=torch.float16):
+                x = self.img_backbone(x)
+            if self.with_img_neck:
+                x = self.img_neck(x)
 
             if not isinstance(x, torch.Tensor):
                 x = x[0]

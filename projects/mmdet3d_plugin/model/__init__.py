@@ -16,6 +16,7 @@ from .nuscenes_metrics import MFNuScenesMetric
 from .prediction_head import MFSeparateHead
 from .rdiouloss import RDIoULoss, SoftFocalLoss
 from .bevfusion_necks import GeneralizedLSSFPN
+from .eva_vit import EVAViT
 
 
 __all__ = [
@@ -28,6 +29,7 @@ __all__ = [
     'MFNuScenesMetric', 'MFDeformableDetrTransformerDecoderLayer',
     'MFSeparateHead', 'RDIoULoss', 'SoftFocalLoss', 'GeneralizedLSSFPN',
     'CenterTransformerDecoderLayer', 'CenterDetrTransformerDecoder',
+    'EVAViT',
 ]
 
 
